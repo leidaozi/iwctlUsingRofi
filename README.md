@@ -187,14 +187,14 @@ NoDisplay=true
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
 ```
 
+You're Done!
+
 ### Tips for rofi:
 
 • Don't use normal rofi, use the wlroots, wayland native one: 
 ```
 yay -S rofi-lbonn-wayland
 ```
-
-You're Done!
 
 • If you don't have `yay` yet: 
 ```
