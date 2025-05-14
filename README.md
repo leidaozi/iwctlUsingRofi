@@ -81,6 +81,10 @@ iwctl
 **You're done!** Your system now uses a minimal networking stack with no bloat. 
 *The reason for use of systemd instead of iwd alone is to allow for vpn and ethernet use.*
 
+
+
+
+
 ### Tips for using iwctl:
 
 • List wireless devices: 
@@ -189,6 +193,10 @@ chmod +x ~/.local/share/applications/Wi-Fi.desktop
 ```
 
 **You're done!**
+
+
+
+
 
 ### Tips for rofi:
 
