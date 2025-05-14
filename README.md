@@ -6,7 +6,7 @@ Use Rofi to connect to your Wi-Fi network through iwctl, without a bloated netwo
 nano ~/.local/bin/Wi-Fi
 ```
 
-3) Paste the following script:
+2) Paste the following script:
 ```
 #!/bin/bash
 
@@ -52,12 +52,12 @@ Press Ctrl + O to save, then Ctrl + X to exit.
 chmod +x ~/.local/bin/Wi-Fi
 ```
 
-6) Create a .desktop entry, use the terminal and run:
+5) Create a .desktop entry, use the terminal and run:
 ```
 nano ~/.local/share/applications/Wi-Fi.desktop
 ```
 
-7) Paste the following, replace 'yourusername' with your actual Linux username:
+6) Paste the following, replace 'yourusername' with your actual Linux username:
 ```
 [Desktop Entry]
 Type=Application
@@ -68,15 +68,15 @@ Terminal=false
 Categories=Network;
 ```
 
-8) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
+7) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
 ```
 NoDisplay=true
 ```
 
-10) Exit and save changes:
+8) Exit and save changes:
 Press Ctrl + O to save, then Ctrl + X to exit.
 
-11) Make the .desktop file executable, use the terminal and run:
+9) Make the .desktop file executable, use the terminal and run:
 ```
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
 ```
