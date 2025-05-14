@@ -2,9 +2,12 @@
 Use Rofi to connect to your Wi-Fi network through iwctl, without a bloated network manager. Lightweight, minimal, and perfect for Hyprland or any Wayland setup.
 
 1) Create your Wi-Fi picker script, open your terminal and run:
+```
 nano ~/.local/bin/Wi-Fi
+```
 
-2) Paste the following script:
+3) Paste the following script:
+```
 #!/bin/bash
 
 # Detect Wi-Fi interface (strip color codes first)
@@ -39,17 +42,23 @@ if [ -n "$chosen" ]; then
     notify-send "Wi-Fi" "Attempting to connect to $chosen without pas>
   fi
 fi
+```
 
 3) Exit and save changes:
 Press Ctrl + O to save, then Ctrl + X to exit.
 
 4) Make the script executable, use the terminal and run:
+```
 chmod +x ~/.local/bin/Wi-Fi
+```
 
-5) Create a .desktop entry, use the terminal and run:
+6) Create a .desktop entry, use the terminal and run:
+```
 nano ~/.local/share/applications/Wi-Fi.desktop
+```
 
-6) Paste the following, replace 'yourusername' with your actual Linux username:
+7) Paste the following, replace 'yourusername' with your actual Linux username:
+```
 [Desktop Entry]
 Type=Application
 Name=Wi-Fi
@@ -57,14 +66,19 @@ Exec=/home/yourusername/.local/bin/Wi-Fi
 Icon=network-wireless
 Terminal=false
 Categories=Network;
+```
 
-7) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
+8) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
+```
 NoDisplay=true
+```
 
-8) Exit and save changes:
+10) Exit and save changes:
 Press Ctrl + O to save, then Ctrl + X to exit.
 
-9) Make the .desktop file executable, use the terminal and run:
+11) Make the .desktop file executable, use the terminal and run:
+```
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
+```
 
 You're Done!
