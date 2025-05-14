@@ -1,31 +1,32 @@
 # IwctlWithSystemd
+Use systemd-networkd with iwd for a lightweight, minimal networking solution without bloated network managers. Perfect for Hyprland, Sway, or any Wayland setup.
 
-1) Install iwd:
+1) Install the iwd package, open your terminal and run:
 ```
 pacman -S iwd
 ```
 
-2) Enable iwd service:
+2) Enable the iwd service to start automatically:
 ```
 systemctl enable iwd
 ```
 
-3) Install systemd:
+3) Make sure systemd is installed (it should already be on most systems):
 ```
 pacman -S systemd
 ```
 
-4) Enable systemd-networkd service:
+4) Enable the systemd-networkd service for network management:
 ```
 systemctl enable systemd-networkd
 ```
 
-5) Also enable systemd-resolved for DNS resolution:
+5) Enable systemd-resolved for DNS resolution:
 ```
 systemctl enable systemd-resolved
 ```
 
-6) Create a basic network configuration file for systemd-networkd:
+6) Create the network configuration directory:
 ```
 mkdir -p /etc/systemd/network/
 ```
@@ -35,7 +36,7 @@ mkdir -p /etc/systemd/network/
 nano /etc/systemd/network/25-wireless.network
 ```
 
-8) Add this content:
+8) Paste the following configuration:
 ```
 [Match]
 Name=wlan0
@@ -44,15 +45,18 @@ Name=wlan0
 DHCP=yes
 ```
 
-(Note: If your wireless interface isn't named wlan0, you'll need to adjust this. You can check with `ip link` to see the correct name)
+9) Exit and save changes:
+`Press Ctrl + O to save, then Ctrl + X to exit.`
 
-9) Configure iwd to work with systemd-networkd by creating/editing this file:
+(Note: If your wireless interface isn't named wlan0, check with `ip link` and use your actual interface name)
+
+9) Create the iwd configuration directory and file:
 ```
 mkdir -p /etc/iwd/
 nano /etc/iwd/main.conf
 ```
 
-10) Add this content:
+10) Paste this configuration to make iwd work with systemd-networkd:
 ```
 [General]
 EnableNetworkConfiguration=false
@@ -61,15 +65,32 @@ EnableNetworkConfiguration=false
 NameResolvingService=systemd
 ```
 
-11) If you need to create symbolic link for systemd-resolved:
+11) Exit and save changes:
+`Press Ctrl + O to save, then Ctrl + X to exit.`
+
+11) Exit and save changes:
+`Press Ctrl + O to save, then Ctrl + X to exit.`
+
+12) Set up DNS resolution by creating a symbolic link:
 ```
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 ```
 
-12) After rebooting into your new system, you'll be able to connect to wireless networks using:
+13) Reboot your system to apply changes. After rebooting, connect to networks with:
 ```
 iwctl
 ```
+
+You're done! Your system now uses a minimal networking stack with no bloat.
+
+## Tips for using iwctl:
+
+• List wireless devices: `iwctl device list`
+• Scan for networks: `iwctl station <device> scan`
+• List available networks: `iwctl station <device> get-networks`
+• Connect to a network: `iwctl station <device> connect <network-name>`
+
+Want a graphical way to connect? Check out the iwctl-rofi integration guide below.
 
 # iwctlUsingRofi
 Use Rofi to connect to your Wi-Fi network through iwctl, without a bloated network manager. Lightweight, minimal, and perfect for Hyprland or any Wayland setup.
