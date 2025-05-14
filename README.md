@@ -78,7 +78,7 @@ ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 iwctl
 ```
 
-You're done! Your system now uses a minimal networking stack with no bloat.
+You're done! Your system now uses a minimal networking stack with no bloat. The reason for use of systemd instead of iwd alone is to allow for vpn and ethernet use.
 
 ### Tips for using iwctl:
 
@@ -194,6 +194,8 @@ chmod +x ~/.local/share/applications/Wi-Fi.desktop
 yay -S rofi-lbonn-wayland
 ```
 
+You're Done!
+
 • If you don't have `yay` yet: 
 ```
 sudo pacman -S base-devel git
@@ -202,5 +204,3 @@ git clone https://aur.archlinux.org/yay.git
 cd yay
 makepkg -si
 ```
-
-You're Done!
