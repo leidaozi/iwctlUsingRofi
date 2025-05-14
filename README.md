@@ -45,10 +45,7 @@ Name=wlan0
 DHCP=yes
 ```
 
-9) Exit and save changes:
-`
-Press Ctrl + O to save, then Ctrl + X to exit.
-`
+9) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 (Note: If your wireless interface isn't named wlan0, check with `ip link` and use your actual interface name)
 
@@ -67,10 +64,7 @@ EnableNetworkConfiguration=false
 NameResolvingService=systemd
 ```
 
-12) Exit and save changes:
-`
-Press Ctrl + O to save, then Ctrl + X to exit.
-`
+12) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 14) Set up DNS resolution by creating a symbolic link:
 ```
@@ -159,10 +153,7 @@ if [ -n "$chosen" ]; then
 fi
 ```
 
-3) Exit and save changes:
-`
-Press Ctrl + O to save, then Ctrl + X to exit.
-`
+3) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 5) Make the script executable, use the terminal and run:
 ```
@@ -190,10 +181,7 @@ Categories=Network;
 NoDisplay=true
 ```
 
-8) Exit and save changes:
-`
-Press Ctrl + O to save, then Ctrl + X to exit.
-`
+8) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 10) Make the .desktop file executable, use the terminal and run:
 ```
@@ -263,10 +251,7 @@ case "$chosen" in
 esac
 ```
 
-4) Exit and save changes:
-`
-Press Ctrl + O to save, then Ctrl + X to exit.
-`
+4) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 5) Make the script executable:
 ```
@@ -288,9 +273,6 @@ bind = SUPER, SPACE, exec, rofi -show drun
 bind = SUPER, SPACE, exec, ~/scripts/rofi-launcher.sh
 `
 
-9) Exit and save changes:
-`
-Press Ctrl + O to save, then Ctrl + X to exit.
-`
+9) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 **Done!**
