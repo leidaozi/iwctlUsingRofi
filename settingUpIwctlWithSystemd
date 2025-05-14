@@ -1,0 +1,72 @@
+# Setting Up systemd-networkd with iwd
+
+Install iwd:
+```
+pacman -S iwd
+```
+
+Enable iwd service:
+```
+systemctl enable iwd
+```
+
+Install systemd:
+```
+pacman -S systemd
+```
+
+Enable systemd-networkd service:
+```
+systemctl enable systemd-networkd
+```
+
+Also enable systemd-resolved for DNS resolution:
+```
+systemctl enable systemd-resolved
+```
+
+Create a basic network configuration file for systemd-networkd:
+```
+mkdir -p /etc/systemd/network/
+```
+
+Create a wireless network configuration file:
+```
+nano /etc/systemd/network/25-wireless.network
+```
+
+Add this content:
+```
+[Match]
+Name=wlan0
+
+[Network]
+DHCP=yes
+```
+
+(Note: If your wireless interface isn't named wlan0, you'll need to adjust this. You can check with `ip link` to see the correct name)
+
+1. Configure iwd to work with systemd-networkd by creating/editing this file:
+```
+mkdir -p /etc/iwd/
+nano /etc/iwd/main.conf
+```
+
+Add this content:
+```
+[General]
+EnableNetworkConfiguration=false
+
+[Network]
+NameResolvingService=systemd
+```
+
+If you need to create symbolic link for systemd-resolved:
+```
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+```
+
+After rebooting into your new system, you'll be able to connect to wireless networks using:
+```
+iwctl
+```
