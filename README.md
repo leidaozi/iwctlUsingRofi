@@ -68,11 +68,3 @@ Press Ctrl + O to save, then Ctrl + X to exit.
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
 
 You're Done!
-
-Now you can:
-
-    Launch your script via Rofi drun mode
-    
-    Keep your system free of bloated Wi-Fi daemons
-    
-    Manage your own interface with elegant precision
