@@ -82,10 +82,25 @@ You're done! Your system now uses a minimal networking stack with no bloat.
 
 ### Tips for using iwctl:
 
-• List wireless devices: `iwctl device list`
-• Scan for networks: `iwctl station <device> scan`
-• List available networks: `iwctl station <device> get-networks`
-• Connect to a network: `iwctl station <device> connect <network-name>`
+• List wireless devices: 
+```
+iwctl device list
+```
+
+• Scan for networks: 
+```
+iwctl station <device> scan
+```
+
+• List available networks: 
+```
+iwctl station <device> get-networks
+```
+
+• Connect to a network: 
+```
+iwctl station <device> connect <network-name>
+```
 
 Want a graphical way to connect? Check out the iwctl-rofi integration guide below.
 
@@ -170,6 +185,22 @@ NoDisplay=true
 9) Make the .desktop file executable, use the terminal and run:
 ```
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
+```
+
+### Tips for rofi:
+
+• Don't use normal rofi, use: 
+```
+yay -S rofi-lbonn-wayland
+```
+
+• If you don't have `yay` yet: 
+```
+sudo pacman -S base-devel git
+cd ~
+git clone https://aur.archlinux.org/yay.git
+cd yay
+makepkg -si
 ```
 
 You're Done!
