@@ -82,7 +82,7 @@ iwctl
 *The reason for use of systemd instead of iwd alone is to allow for vpn and ethernet use.*
 
 
-
+<br>
 
 
 ### Tips for using iwctl:
@@ -195,7 +195,7 @@ chmod +x ~/.local/share/applications/Wi-Fi.desktop
 **You're done!**
 
 
-
+<br>
 
 
 ### Tips for rofi:
