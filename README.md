@@ -263,15 +263,10 @@ chmod +x ~/scripts/rofi-launcher.sh
 nano ~/.config/hypr/hyprland.conf
 ```
 
-7) Find the existing line:
-`
-bind = SUPER, SPACE, exec, rofi -show drun
-`
-
-8) Replace it with:
-`
+7) Find the existing line, `bind = SUPER, SPACE, exec, rofi -show drun` And replace it with:
+```
 bind = SUPER, SPACE, exec, ~/scripts/rofi-launcher.sh
-`
+```
 
 9) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
