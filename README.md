@@ -155,35 +155,35 @@ fi
 
 3) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
-5) Make the script executable, use the terminal and run:
+4) Make the script executable, use the terminal and run:
 ```
 chmod +x ~/scripts/Wi-Fi.sh
 ```
 
-6) Create a .desktop entry, use the terminal and run:
+5) Create a .desktop entry, use the terminal and run:
 ```
 nano ~/.local/share/applications/Wi-Fi.desktop
 ```
 
-7) Paste the following, replace `yourusername` with your actual Linux username:
+6) Paste the following:
 ```
 [Desktop Entry]
 Type=Application
 Name=Wi-Fi
-Exec=/home/yourusername/scripts/Wi-Fi.sh
+Exec=/home/$USER/scripts/Wi-Fi.sh
 Icon=network-wireless
 Terminal=false
 Categories=Network;
 ```
 
-8) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
+7) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
 ```
 NoDisplay=true
 ```
 
-9) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+8) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
-10) Make the .desktop file executable, use the terminal and run:
+9) Make the .desktop file executable, use the terminal and run:
 ```
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
 ```
