@@ -50,13 +50,13 @@ DHCP=yes
 
 (Note: If your wireless interface isn't named wlan0, check with `ip link` and use your actual interface name)
 
-9) Create the iwd configuration directory and file:
+10) Create the iwd configuration directory and file:
 ```
 mkdir -p /etc/iwd/
 nano /etc/iwd/main.conf
 ```
 
-10) Paste this configuration to make iwd work with systemd-networkd:
+11) Paste this configuration to make iwd work with systemd-networkd:
 ```
 [General]
 EnableNetworkConfiguration=false
@@ -65,15 +65,15 @@ EnableNetworkConfiguration=false
 NameResolvingService=systemd
 ```
 
-11) Exit and save changes:
+12) Exit and save changes:
 `Press Ctrl + O to save, then Ctrl + X to exit.`
 
-12) Set up DNS resolution by creating a symbolic link:
+13) Set up DNS resolution by creating a symbolic link:
 ```
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 ```
 
-13) Reboot your system to apply changes. After rebooting, connect to networks with:
+14) Reboot your system to apply changes. After rebooting, connect to networks with:
 ```
 iwctl
 ```
@@ -102,7 +102,7 @@ nano ~/.local/bin/Wi-Fi
 #!/bin/bash
 
 # Detect Wi-Fi interface (strip color codes first)
-iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {>
+iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
 
 # Scan for networks
 iwctl station "$iface" scan
@@ -130,7 +130,7 @@ if [ -n "$chosen" ]; then
   else
     # Try connecting without password
     iwctl station "$iface" connect "$chosen"
-    notify-send "Wi-Fi" "Attempting to connect to $chosen without pas>
+    notify-send "Wi-Fi" "Attempting to connect to $chosen without password..."
   fi
 fi
 ```
