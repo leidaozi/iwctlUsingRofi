@@ -45,7 +45,7 @@ fi
 ```
 
 3) Exit and save changes:
-Press Ctrl + O to save, then Ctrl + X to exit.
+`Press Ctrl + O to save, then Ctrl + X to exit.`
 
 4) Make the script executable, use the terminal and run:
 ```
@@ -74,7 +74,7 @@ NoDisplay=true
 ```
 
 8) Exit and save changes:
-Press Ctrl + O to save, then Ctrl + X to exit.
+`Press Ctrl + O to save, then Ctrl + X to exit.`
 
 9) Make the .desktop file executable, use the terminal and run:
 ```
