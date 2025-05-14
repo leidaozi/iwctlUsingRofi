@@ -66,7 +66,7 @@ NameResolvingService=systemd
 
 12) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
-14) Set up DNS resolution by creating a symbolic link:
+13) Set up DNS resolution by creating a symbolic link:
 ```
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 ```
@@ -160,12 +160,12 @@ fi
 chmod +x ~/scripts/Wi-Fi.sh
 ```
 
-5) Create a .desktop entry, use the terminal and run:
+6) Create a .desktop entry, use the terminal and run:
 ```
 nano ~/.local/share/applications/Wi-Fi.desktop
 ```
 
-6) Paste the following, replace `yourusername` with your actual Linux username:
+7) Paste the following, replace `yourusername` with your actual Linux username:
 ```
 [Desktop Entry]
 Type=Application
@@ -176,12 +176,12 @@ Terminal=false
 Categories=Network;
 ```
 
-7) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
+8) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
 ```
 NoDisplay=true
 ```
 
-8) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+9) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 10) Make the .desktop file executable, use the terminal and run:
 ```
@@ -268,6 +268,6 @@ nano ~/.config/hypr/hyprland.conf
 bind = SUPER, SPACE, exec, ~/scripts/rofi-launcher.sh
 ```
 
-9) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+8) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
 
 **Done!**
