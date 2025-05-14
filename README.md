@@ -68,9 +68,6 @@ NameResolvingService=systemd
 11) Exit and save changes:
 `Press Ctrl + O to save, then Ctrl + X to exit.`
 
-11) Exit and save changes:
-`Press Ctrl + O to save, then Ctrl + X to exit.`
-
 12) Set up DNS resolution by creating a symbolic link:
 ```
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
@@ -83,7 +80,7 @@ iwctl
 
 You're done! Your system now uses a minimal networking stack with no bloat.
 
-## Tips for using iwctl:
+### Tips for using iwctl:
 
 • List wireless devices: `iwctl device list`
 • Scan for networks: `iwctl station <device> scan`
