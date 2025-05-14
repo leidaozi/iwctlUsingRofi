@@ -46,7 +46,9 @@ DHCP=yes
 ```
 
 9) Exit and save changes:
-`Press Ctrl + O to save, then Ctrl + X to exit.`
+`
+Press Ctrl + O to save, then Ctrl + X to exit.
+`
 
 (Note: If your wireless interface isn't named wlan0, check with `ip link` and use your actual interface name)
 
@@ -66,9 +68,11 @@ NameResolvingService=systemd
 ```
 
 12) Exit and save changes:
-`Press Ctrl + O to save, then Ctrl + X to exit.`
+`
+Press Ctrl + O to save, then Ctrl + X to exit.
+`
 
-13) Set up DNS resolution by creating a symbolic link:
+14) Set up DNS resolution by creating a symbolic link:
 ```
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 ```
@@ -114,7 +118,7 @@ Use Rofi to connect to your Wi-Fi network through iwctl, without a bloated netwo
 
 1) Create your Wi-Fi picker script, open your terminal and run:
 ```
-nano ~/.local/bin/Wi-Fi
+nano ~/scripts/Wi-Fi.sh
 ```
 
 2) Paste the following script:
@@ -156,11 +160,13 @@ fi
 ```
 
 3) Exit and save changes:
-`Press Ctrl + O to save, then Ctrl + X to exit.`
+`
+Press Ctrl + O to save, then Ctrl + X to exit.
+`
 
-4) Make the script executable, use the terminal and run:
+5) Make the script executable, use the terminal and run:
 ```
-chmod +x ~/.local/bin/Wi-Fi
+chmod +x ~/scripts/Wi-Fi.sh
 ```
 
 5) Create a .desktop entry, use the terminal and run:
@@ -168,12 +174,12 @@ chmod +x ~/.local/bin/Wi-Fi
 nano ~/.local/share/applications/Wi-Fi.desktop
 ```
 
-6) Paste the following, replace 'yourusername' with your actual Linux username:
+6) Paste the following, replace `yourusername` with your actual Linux username:
 ```
 [Desktop Entry]
 Type=Application
 Name=Wi-Fi
-Exec=/home/yourusername/.local/bin/Wi-Fi
+Exec=/home/yourusername/scripts/Wi-Fi.sh
 Icon=network-wireless
 Terminal=false
 Categories=Network;
@@ -185,9 +191,11 @@ NoDisplay=true
 ```
 
 8) Exit and save changes:
-`Press Ctrl + O to save, then Ctrl + X to exit.`
+`
+Press Ctrl + O to save, then Ctrl + X to exit.
+`
 
-9) Make the .desktop file executable, use the terminal and run:
+10) Make the .desktop file executable, use the terminal and run:
 ```
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
 ```
@@ -213,3 +221,76 @@ git clone https://aur.archlinux.org/yay.git
 cd yay
 makepkg -si
 ```
+
+Optionally, you can follow the guide below to create a rofi launcher script, as an alternative to making a Wi-Fi.desktop file.
+
+# rofiLaunchScript
+
+1) Make a scripts directory (if it doesn’t exist):
+```
+mkdir -p ~/scripts
+```
+
+2) Create the launcher script:
+```
+nano ~/scripts/rofi-launcher.sh
+```
+
+3) Paste the following code into the file:
+```
+#!/bin/bash
+
+# Background Wi-Fi scan
+iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
+[ -n "$iface" ] && iwctl station "$iface" scan &
+
+# Show Rofi menu
+chosen=$(printf "Apps\nWi-Fi\nPower\nExit" | rofi -dmenu -p "Select Action")
+
+# Handle selection
+case "$chosen" in
+  "Apps") rofi -show drun ;;
+  "Wi-Fi") ~/scripts/Wi-Fi.sh ;;
+  "Power")
+    power_choice=$(printf "Shutdown\nReboot\nSuspend\nCancel" | rofi -dmenu -p "Power")
+    case "$power_choice" in
+      "Shutdown") systemctl poweroff ;;
+      "Reboot") systemctl reboot ;;
+      "Suspend") systemctl suspend ;;
+    esac
+    ;;
+  "Exit") exit ;;
+esac
+```
+
+4) Exit and save changes:
+`
+Press Ctrl + O to save, then Ctrl + X to exit.
+`
+
+5) Make the script executable:
+```
+chmod +x ~/scripts/rofi-launcher.sh
+```
+
+6) Edit the Hyprland config:
+```
+nano ~/.config/hypr/hyprland.conf
+```
+
+7) Find the existing line:
+`
+bind = SUPER, SPACE, exec, rofi -show drun
+`
+
+8) Replace it with:
+`
+bind = SUPER, SPACE, exec, ~/scripts/rofi-launcher.sh
+`
+
+9) Exit and save changes:
+`
+Press Ctrl + O to save, then Ctrl + X to exit.
+`
+
+**Done!**
