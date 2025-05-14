@@ -189,7 +189,7 @@ chmod +x ~/.local/share/applications/Wi-Fi.desktop
 
 ### Tips for rofi:
 
-• Don't use normal rofi, use: 
+• Don't use normal rofi, use the wlroots, wayland native one: 
 ```
 yay -S rofi-lbonn-wayland
 ```
