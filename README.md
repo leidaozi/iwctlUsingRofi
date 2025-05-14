@@ -187,7 +187,7 @@ NoDisplay=true
 chmod +x ~/.local/share/applications/Wi-Fi.desktop
 ```
 
-You're Done!
+You're done!
 
 ### Tips for rofi:
 
