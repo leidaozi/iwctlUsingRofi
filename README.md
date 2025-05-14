@@ -1,5 +1,5 @@
 # IwctlWithSystemd
-Use systemd-networkd with iwd for a lightweight, minimal networking solution without bloated network managers. Perfect for Hyprland, Sway, or any Wayland setup.
+Use systemd-networkd with iwd for a lightweight, minimal networking solution without bloated network managers.
 
 1) Install the iwd package, open your terminal and run:
 ```
@@ -90,7 +90,7 @@ You're done! Your system now uses a minimal networking stack with no bloat.
 Want a graphical way to connect? Check out the iwctl-rofi integration guide below.
 
 # iwctlUsingRofi
-Use Rofi to connect to your Wi-Fi network through iwctl, without a bloated network manager. Lightweight, minimal, and perfect for Hyprland or any Wayland setup.
+Use Rofi to connect to your Wi-Fi network through iwctl, without a bloated network manager.
 
 1) Create your Wi-Fi picker script, open your terminal and run:
 ```
