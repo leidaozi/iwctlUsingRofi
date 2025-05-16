@@ -180,6 +180,14 @@ Use Rofi to connect to Wi-Fi through iwctl.
      exit 0
    fi
 
+   # Kill all iwd agent state to prevent delayed prompts
+   sudo systemctl restart iwd
+   sleep 2
+
+   # Re-scan so new session starts fresh
+   iwctl station "$iface" scan
+   sleep 1
+
    # Prompt for password if needed
    pass=$(echo "" | rofi -dmenu -password -p "Password for $chosen")
    if [ -n "$pass" ]; then
