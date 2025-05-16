@@ -128,27 +128,65 @@ Use Rofi to connect to Wi-Fi through iwctl.
 
    ```bash
    #!/bin/bash
-   iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
+
+   # Detect Wi-Fi interface
+   iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/        wlan/ {print $1; exit}')
+
+   # Get current SSID
+   current=$(iwctl station "$iface" show | sed 's/\x1b\[[0-9;]*m//g'     | grep 'Connected network' | awk '{print $NF}' | xargs)
+
+   # Scan
    iwctl station "$iface" scan
+
+   # Clean network list
    networks=$(iwctl station "$iface" get-networks |
      sed 's/\x1b\[[0-9;]*m//g' |
      grep -v "Available\|Network\|-----" |
      sed 's/>//g' |
-     awk '{if(NF>0) print $1}' |
+     sed 's/^[ \t]*//' |
+     awk '{print $1}' |
      grep -v "^$")
 
-   chosen=$(echo "$networks" | rofi -dmenu -p "Select Wi-Fi")
-
-   if [ -n "$chosen" ]; then
-     pass=$(echo "" | rofi -dmenu -password -p "Password for $chosen")
-
-     if [ -n "$pass" ]; then
-       iwctl station "$iface" connect "$chosen" --passphrase "$pass"
-       notify-send "Wi-Fi" "Connecting to $chosen..."
+   # Build menu
+   menu=$(echo "$networks" | while read -r line; do
+     clean_line=$(echo "$line" | xargs)
+     if [ "$clean_line" = "$current" ]; then
+       echo "$clean_line (connected)"
      else
-       iwctl station "$iface" connect "$chosen"
-       notify-send "Wi-Fi" "Attempting to connect to $chosen without password..."
+       echo "$clean_line"
      fi
+   done)
+
+   # Rofi prompt
+   chosen=$(echo "$menu" | rofi -dmenu -p "Select Wi-Fi")
+
+   # Exit if nothing selected
+   [ -z "$chosen" ] && exit 0
+
+   # Remove (connected)
+   chosen=$(echo "$chosen" | sed 's/ (connected)//')
+
+   # Disconnect if same as current
+   if [ "$chosen" = "$current" ]; then
+     iwctl station "$iface" disconnect
+     notify-send "Wi-Fi" "Disconnected from $chosen"
+     exit 0
+   fi
+
+   # Try connection
+   iwctl station "$iface" connect "$chosen"
+   if [ $? -eq 0 ]; then
+     notify-send "Wi-Fi" "Connected to $chosen"
+     exit 0
+   fi
+
+   # Prompt for password if needed
+   pass=$(echo "" | rofi -dmenu -password -p "Password for $chosen")
+   if [ -n "$pass" ]; then
+     iwctl station "$iface" connect "$chosen" --passphrase "$pass"
+     notify-send "Wi-Fi" "Connecting to $chosen..."
+   else
+     notify-send "Wi-Fi" "No password entered. Connection cancelled."
    fi
    ```
 
