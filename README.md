@@ -126,94 +126,94 @@ Use Rofi to connect to Wi-Fi through iwctl.
 
    Paste the following:
 
-```bash
-#!/bin/bash
+   ```bash
+   #!/bin/bash
 
-# Detect Wi-Fi interface
-iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
+   # Detect Wi-Fi interface
+   iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
 
-# File to track manually saved SSIDs
-saved_file="$HOME/.config/iwctl-saved"
-mkdir -p ~/.config
-touch "$saved_file"
+   # File to track manually saved SSIDs
+   saved_file="$HOME/.config/iwctl-saved"
+   mkdir -p ~/.config
+   touch "$saved_file"
 
-# Get current SSID
-current=$(iwctl station "$iface" show | sed 's/\x1b\[[0-9;]*m//g' | grep 'Connected network' | awk '{print $NF}' | xargs)
+   # Get current SSID
+   current=$(iwctl station "$iface" show | sed 's/\x1b\[[0-9;]*m//g' | grep 'Connected network' | awk '{print $NF}' | xargs)
 
-while true; do
-  # Trigger new scan
-  iwctl station "$iface" scan
+   while true; do
+     # Trigger new scan
+     iwctl station "$iface" scan
 
-  # Clean network list
-  networks=$(iwctl station "$iface" get-networks |
-    sed 's/\x1b\[[0-9;]*m//g' |
-    grep -v "Available\|Network\|-----" |
-    sed 's/>//g' |
-    sed 's/^[ \t]*//' |
-    awk '{print $1}' |
-    grep -v "^$")
+     # Clean network list
+     networks=$(iwctl station "$iface" get-networks |
+       sed 's/\x1b\[[0-9;]*m//g' |
+       grep -v "Available\|Network\|-----" |
+       sed 's/>//g' |
+       sed 's/^[ \t]*//' |
+       awk '{print $1}' |
+       grep -v "^$")
 
-  # Build menu with refresh option at top
-  menu=$(echo -e "[Refresh]\n$(echo "$networks" | while read -r line; do
-    clean_line=$(echo "$line" | xargs)
-    if [ "$clean_line" = "$current" ]; then
-      echo "$clean_line (connected)"
-    else
-      echo "$clean_line"
-    fi
-  done)")
+     # Build menu with refresh option at top
+     menu=$(echo -e "[Refresh]\n$(echo "$networks" | while read -r line; do
+       clean_line=$(echo "$line" | xargs)
+       if [ "$clean_line" = "$current" ]; then
+         echo "$clean_line (connected)"
+       else
+         echo "$clean_line"
+       fi
+     done)")
 
-  # Rofi prompt
-  chosen=$(echo "$menu" | rofi -dmenu -p "Select Wi-Fi")
-  [ -z "$chosen" ] && exit 0
+     # Rofi prompt
+     chosen=$(echo "$menu" | rofi -dmenu -p "Select Wi-Fi")
+     [ -z "$chosen" ] && exit 0
 
-  chosen=$(echo "$chosen" | sed 's/ (connected)//')
+     chosen=$(echo "$chosen" | sed 's/ (connected)//')
 
-  if [ "$chosen" = "[Refresh]" ]; then
-    continue
-  fi
+     if [ "$chosen" = "[Refresh]" ]; then
+       continue
+     fi
 
-  # Disconnect if selected again
-  if [ "$chosen" = "$current" ]; then
-    iwctl station "$iface" disconnect
-    notify-send "Wi-Fi" "Disconnected from $chosen"
-    exit 0
-  fi
+     # Disconnect if selected again
+     if [ "$chosen" = "$current" ]; then
+       iwctl station "$iface" disconnect
+       notify-send "Wi-Fi" "Disconnected from $chosen"
+       exit 0
+     fi
 
-  # Check if SSID is in saved file
-  if grep -Fxq "$chosen" "$saved_file"; then
-    iwctl station "$iface" connect "$chosen"
-    sleep 2
-    new_current=$(iwctl station "$iface" show | sed 's/\x1b\[[0-9;]*m//g' | grep 'Connected network' | awk '{print $NF}' | xargs)
-    if [ "$new_current" = "$chosen" ]; then
-      notify-send "Wi-Fi" "Connected to $chosen"
-      exit 0
-    else
-      sed -i "/^$chosen$/d" "$saved_file"
-      notify-send "Wi-Fi" "Saved credentials for $chosen failed. Removed from list."
-    fi
-  fi
+     # Check if SSID is in saved file
+     if grep -Fxq "$chosen" "$saved_file"; then
+       iwctl station "$iface" connect "$chosen"
+       sleep 2
+       new_current=$(iwctl station "$iface" show | sed 's/\x1b\[[0-9;]*m//g' | grep 'Connected network' | awk '{print $NF}' | xargs)
+       if [ "$new_current" = "$chosen" ]; then
+         notify-send "Wi-Fi" "Connected to $chosen"
+         exit 0
+       else
+         sed -i "/^$chosen$/d" "$saved_file"
+         notify-send "Wi-Fi" "Saved credentials for $chosen failed. Removed from list."
+       fi
+     fi
 
-  # Prompt for password
-  pass=$(echo "" | rofi -dmenu -password -p "Password for $chosen")
-  if [ -n "$pass" ]; then
-    iwctl station "$iface" connect "$chosen" --passphrase "$pass"
-    sleep 2
-    now=$(iwctl station "$iface" show | sed 's/\x1b\[[0-9;]*m//g' | grep 'Connected network' | awk '{print $NF}' | xargs)
-    if [ "$now" = "$chosen" ]; then
-      echo "$chosen" >> "$saved_file"
-      sort -u "$saved_file" -o "$saved_file"
-      notify-send "Wi-Fi" "Connected and saved $chosen"
-    else
-      notify-send "Wi-Fi" "Failed to connect to $chosen"
-    fi
-  else
-    notify-send "Wi-Fi" "No password entered. Connection cancelled."
-  fi
+     # Prompt for password
+     pass=$(echo "" | rofi -dmenu -password -p "Password for $chosen")
+     if [ -n "$pass" ]; then
+       iwctl station "$iface" connect "$chosen" --passphrase "$pass"
+       sleep 2
+       now=$(iwctl station "$iface" show | sed 's/\x1b\[[0-9;]*m//g' | grep 'Connected network' | awk '{print $NF}' | xargs)
+       if [ "$now" = "$chosen" ]; then
+         echo "$chosen" >> "$saved_file"
+         sort -u "$saved_file" -o "$saved_file"
+         notify-send "Wi-Fi" "Connected and saved $chosen"
+       else
+         notify-send "Wi-Fi" "Failed to connect to $chosen"
+       fi
+     else
+       notify-send "Wi-Fi" "No password entered. Connection cancelled."
+     fi
 
-  break
-done
-```
+     break
+   done
+   ```
 
 2. Make it executable:
 
