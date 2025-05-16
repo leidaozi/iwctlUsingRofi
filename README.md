@@ -1,273 +1,248 @@
-# IwctlWithSystemd
+## iwctlWithSystemd
+
 Use systemd-networkd with iwd for a lightweight, minimal networking solution without bloated network managers.
 
-1) Install the iwd package, open your terminal and run:
-```
-pacman -S iwd
-```
+1. Install the iwd package:
 
-2) Enable the iwd service to start automatically:
-```
-systemctl enable iwd
-```
+   ```bash
+   pacman -S iwd
+   ```
 
-3) Make sure systemd is installed (it should already be on most systems):
-```
-pacman -S systemd
-```
+2. Enable the iwd service:
 
-4) Enable the systemd-networkd service for network management:
-```
-systemctl enable systemd-networkd
-```
+   ```bash
+   systemctl enable iwd
+   ```
 
-5) Enable systemd-resolved for DNS resolution:
-```
-systemctl enable systemd-resolved
-```
+3. Make sure systemd is installed:
 
-6) Create the network configuration directory:
-```
-mkdir -p /etc/systemd/network/
-```
+   ```bash
+   pacman -S systemd
+   ```
 
-7) Create a wireless network configuration file:
-```
-nano /etc/systemd/network/25-wireless.network
-```
+4. Enable systemd-networkd:
 
-8) Paste the following configuration:
-```
-[Match]
-Name=wlan0
+   ```bash
+   systemctl enable systemd-networkd
+   ```
 
-[Network]
-DHCP=yes
-```
+5. Enable systemd-resolved:
 
-9) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+   ```bash
+   systemctl enable systemd-resolved
+   ```
 
-(Note: If your wireless interface isn't named wlan0, check with `ip link` and use your actual interface name)
+6. Create the network configuration directory:
 
-10) Create the iwd configuration directory and file:
-```
-mkdir -p /etc/iwd/
-nano /etc/iwd/main.conf
-```
+   ```bash
+   mkdir -p /etc/systemd/network/
+   ```
 
-11) Paste this configuration to make iwd work with systemd-networkd:
-```
-[General]
-EnableNetworkConfiguration=false
+7. Create a wireless network configuration file:
 
-[Network]
-NameResolvingService=systemd
-```
+   ```bash
+   nano /etc/systemd/network/25-wireless.network
+   ```
 
-12) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+   Paste the following:
 
-13) Set up DNS resolution by creating a symbolic link:
-```
-ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-```
+   ```ini
+   [Match]
+   Name=wlan0
 
-14) Reboot your system to apply changes. After rebooting, connect to networks with:
-```
-iwctl
-```
+   [Network]
+   DHCP=yes
+   ```
 
-**You're done!** Your system now uses a minimal networking stack with no bloat. 
-*The reason for use of systemd instead of iwd alone is to allow for vpn and ethernet use.*
+   *(Note: Check your interface name with `ip link` if it's not `wlan0`.)*
 
+8. Create the iwd configuration file:
 
-<br>
+   ```bash
+   mkdir -p /etc/iwd/
+   nano /etc/iwd/main.conf
+   ```
 
+   Paste the following:
 
-### Tips for using iwctl:
+   ```ini
+   [General]
+   EnableNetworkConfiguration=false
 
-• List wireless devices: 
-```
-iwctl device list
-```
+   [Network]
+   NameResolvingService=systemd
+   ```
 
-• Scan for networks: 
-```
-iwctl station <device> scan
-```
+9. Set up DNS resolution:
 
-• List available networks: 
-```
-iwctl station <device> get-networks
-```
+   ```bash
+   ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+   ```
 
-• Connect to a network: 
-```
-iwctl station <device> connect <network-name>
-```
+10. Reboot your system and use:
 
-Want a graphical way to connect? Check out the iwctl-rofi integration guide below.
+    ```bash
+    iwctl
+    ```
 
-# iwctlUsingRofi
-Use Rofi to connect to your Wi-Fi network through iwctl, without a bloated network manager.
+Your system now uses a minimal networking stack. systemd-networkd is used to support VPN and Ethernet.
 
-1) Create your Wi-Fi picker script, open your terminal and run:
-```
-nano ~/scripts/Wi-Fi.sh
-```
+---
 
-2) Paste the following script:
-```
-#!/bin/bash
+**Tips for iwctl:**
 
-# Detect Wi-Fi interface (strip color codes first)
-iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
+* List devices:
 
-# Scan for networks
-iwctl station "$iface" scan
+  ```bash
+  iwctl device list
+  ```
+* Scan networks:
 
-# Get list of available SSIDs
-networks=$(iwctl station "$iface" get-networks |
-  sed 's/\x1b\[[0-9;]*m//g' |
-  grep -v "Available\|Network\|-----" |
-  sed 's/>//g' |
-  awk '{if(NF>0) print $1}' |
-  grep -v "^$")
+  ```bash
+  iwctl station <device> scan
+  ```
+* Get networks:
 
-# Show menu with Rofi
-chosen=$(echo "$networks" | rofi -dmenu -p "Select Wi-Fi")
+  ```bash
+  iwctl station <device> get-networks
+  ```
+* Connect:
 
-# If a network was selected, prompt for password
-if [ -n "$chosen" ]; then
-  # Prompt for password using Rofi
-  pass=$(echo "" | rofi -dmenu -password -p "Password for $chosen")
+  ```bash
+  iwctl station <device> connect <network-name>
+  ```
 
-  if [ -n "$pass" ]; then
-    # Connect with password
-    iwctl station "$iface" connect "$chosen" --passphrase "$pass"
-    notify-send "Wi-Fi" "Connecting to $chosen..."
-  else
-    # Try connecting without password
-    iwctl station "$iface" connect "$chosen"
-    notify-send "Wi-Fi" "Attempting to connect to $chosen without password..."
-  fi
-fi
-```
+---
 
-3) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+## iwctlUsingRofi
 
-4) Make the script executable, use the terminal and run:
-```
-chmod +x ~/scripts/Wi-Fi.sh
-```
+Use Rofi to connect to Wi-Fi through iwctl.
 
-5) Create a .desktop entry, use the terminal and run:
-```
-nano ~/.local/share/applications/Wi-Fi.desktop
-```
+1. Create your script:
 
-6) Paste the following:
-```
-[Desktop Entry]
-Type=Application
-Name=Wi-Fi
-Exec=/home/$USER/scripts/Wi-Fi.sh
-Icon=network-wireless
-Terminal=false
-Categories=Network;
-```
+   ```bash
+   nano ~/scripts/Wi-Fi.sh
+   ```
 
-7) (Optional) Hide from menus, show only in Rofi, add this line to the bottom if you don’t want it appearing in app menus:
-```
-NoDisplay=true
-```
+   Paste the following:
 
-8) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+   ```bash
+   #!/bin/bash
+   iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
+   iwctl station "$iface" scan
+   networks=$(iwctl station "$iface" get-networks |
+     sed 's/\x1b\[[0-9;]*m//g' |
+     grep -v "Available\|Network\|-----" |
+     sed 's/>//g' |
+     awk '{if(NF>0) print $1}' |
+     grep -v "^$")
 
-9) Make the .desktop file executable, use the terminal and run:
-```
-chmod +x ~/.local/share/applications/Wi-Fi.desktop
-```
+   chosen=$(echo "$networks" | rofi -dmenu -p "Select Wi-Fi")
 
-**You're done!**
+   if [ -n "$chosen" ]; then
+     pass=$(echo "" | rofi -dmenu -password -p "Password for $chosen")
 
+     if [ -n "$pass" ]; then
+       iwctl station "$iface" connect "$chosen" --passphrase "$pass"
+       notify-send "Wi-Fi" "Connecting to $chosen..."
+     else
+       iwctl station "$iface" connect "$chosen"
+       notify-send "Wi-Fi" "Attempting to connect to $chosen without password..."
+     fi
+   fi
+   ```
 
-<br>
+2. Make it executable:
 
+   ```bash
+   chmod +x ~/scripts/Wi-Fi.sh
+   ```
 
-### Tips for rofi:
+3. Create a .desktop file:
 
-• Don't use normal rofi, use the wlroots, wayland native one: 
-```
-yay -S rofi-lbonn-wayland
-```
+   ```bash
+   nano ~/.local/share/applications/Wi-Fi.desktop
+   ```
 
-• If you don't have `yay` yet: 
-```
-sudo pacman -S base-devel git
-cd ~
-git clone https://aur.archlinux.org/yay.git
-cd yay
-makepkg -si
-```
+   Paste:
 
-Optionally, you can follow the guide below to create a rofi launcher script, as an alternative to making a Wi-Fi.desktop file.
+   ```ini
+   [Desktop Entry]
+   Type=Application
+   Name=Wi-Fi
+   Exec=/home/$USER/scripts/Wi-Fi.sh
+   Icon=network-wireless
+   Terminal=false
+   Categories=Network;
+   NoDisplay=true
+   ```
 
-# rofiLaunchScript
+4. Make it executable:
 
-1) Make a scripts directory (if it doesn’t exist):
-```
-mkdir -p ~/scripts
-```
+   ```bash
+   chmod +x ~/.local/share/applications/Wi-Fi.desktop
+   ```
 
-2) Create the launcher script:
-```
-nano ~/scripts/rofi-launcher.sh
-```
+---
 
-3) Paste the following code into the file:
-```
-#!/bin/bash
+## rofiLaunchScript
 
-# Background Wi-Fi scan
-iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
-[ -n "$iface" ] && iwctl station "$iface" scan &
+1. Ensure your scripts directory exists:
 
-# Show Rofi menu
-chosen=$(printf "Apps\nWi-Fi\nPower\nExit" | rofi -dmenu -p "Select Action")
+   ```bash
+   mkdir -p ~/scripts
+   ```
 
-# Handle selection
-case "$chosen" in
-  "Apps") rofi -show drun ;;
-  "Wi-Fi") ~/scripts/Wi-Fi.sh ;;
-  "Power")
-    power_choice=$(printf "Shutdown\nReboot\nSuspend\nCancel" | rofi -dmenu -p "Power")
-    case "$power_choice" in
-      "Shutdown") systemctl poweroff ;;
-      "Reboot") systemctl reboot ;;
-      "Suspend") systemctl suspend ;;
-    esac
-    ;;
-  "Exit") exit ;;
-esac
-```
+2. Create launcher script:
 
-4) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+   ```bash
+   nano ~/scripts/rofi-launcher.sh
+   ```
 
-5) Make the script executable:
-```
-chmod +x ~/scripts/rofi-launcher.sh
-```
+   Paste:
 
-6) Edit the Hyprland config:
-```
-nano ~/.config/hypr/hyprland.conf
-```
+   ```bash
+   #!/bin/bash
+   iface=$(iwctl device list | sed 's/\x1b\[[0-9;]*m//g' | awk '/wlan/ {print $1; exit}')
+   [ -n "$iface" ] && iwctl station "$iface" scan &
 
-7) Find the existing line, `bind = SUPER, SPACE, exec, rofi -show drun` And replace it with:
-```
-bind = SUPER, SPACE, exec, ~/scripts/rofi-launcher.sh
-```
+   chosen=$(printf "Apps\nWi-Fi\nPower\nExit" | rofi -dmenu -p "Select Action")
 
-8) Exit and save changes: Press Ctrl + O to save, then Ctrl + X to exit.
+   case "$chosen" in
+     "Apps") rofi -show drun ;;
+     "Wi-Fi") ~/scripts/Wi-Fi.sh ;;
+     "Power")
+       power_choice=$(printf "Shutdown\nReboot\nSuspend\nCancel" | rofi -dmenu -p "Power")
+       case "$power_choice" in
+         "Shutdown") systemctl poweroff ;;
+         "Reboot") systemctl reboot ;;
+         "Suspend") systemctl suspend ;;
+       esac
+       ;;
+     "Exit") exit ;;
+   esac
+   ```
 
-**Done!**
+3. Make it executable:
+
+   ```bash
+   chmod +x ~/scripts/rofi-launcher.sh
+   ```
+
+4. Bind it in Hyprland:
+
+   ```bash
+   nano ~/.config/hypr/hyprland.conf
+   ```
+
+   Replace:
+
+   ```ini
+   bind = SUPER, SPACE, exec, rofi -show drun
+   ```
+
+   With:
+
+   ```ini
+   bind = SUPER, SPACE, exec, ~/scripts/rofi-launcher.sh
+   ```
