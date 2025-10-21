@@ -220,77 +220,160 @@ Use Rofi to connect to Wi-Fi through iwctl.
    ```bash
 #!/bin/bash
 
-# Safer shell defaults with locale stability
+# ============================================================================
+# IWD ROFI WIFI MANAGER - ENHANCED VERSION 1.4.1
+# ============================================================================
+# A complete, secure WiFi manager using iwd, busctl, and rofi
+#
+# Version: 1.4.1
+# Date: 2025-01-19
+#
+# SECURITY NOTE:
+# Passwords passed via D-Bus are briefly visible in /proc/$PID/cmdline to
+# root and same-user processes during the busctl call (microseconds). This
+# is a limitation of command-line IPC and is significantly more secure than:
+# - Shell history persistence
+# - Filesystem credential storage
+# - Cross-user visibility
+#
+# For maximum security, ensure proper PolicyKit rules are configured.
+#
+# Changes from v1.4.0:
+# - Hardened signal_to_percent with regex validation
+# - Fixed group check to properly split on newlines
+# - Standardized printf '%b' instead of echo -e
+# - Improved dbus_get_networks fallback parser
+# - Added busctl -- separators for all signatures
+# - Atomic favorites file writing
+# - Extended connection timeout to 30s
+# - Added --json mode for scripting
+# - Removed eval from rfkill parsing
+# - Consistent safe_label wrapping
+# - Integer booleans in self_test
+# ============================================================================
+
+# ============================================================================
+# ENVIRONMENT SETUP
+# ============================================================================
+
 export LC_ALL=C.UTF-8
 export LANG=C.UTF-8
 
-# If C.UTF-8 isn't installed, fall back to plain C
 if ! locale -a 2>/dev/null | grep -qx 'C\.UTF-8'; then
   export LC_ALL=C
   export LANG=C
 fi
 
 set -eEuo pipefail
-trap 'notify-send "Wi-Fi Error" "Unexpected error on line $LINENO"; exit 1' ERR
 
-# --- Debug plumbing ----------------------------------------------------------
+# Restore terminal on unexpected exit
+restore_terminal() {
+    stty sane 2>/dev/null || true
+    tput cnorm 2>/dev/null || true
+}
+
+trap 'restore_terminal; notify-send "Wi-Fi Error" "Unexpected error on line $LINENO"; exit 1' ERR INT TERM
+
+# ============================================================================
+# VERSION INFO
+# ============================================================================
+
+SCRIPT_VERSION="1.4.1"
+SCRIPT_DATE="2025-01-19"
+
+# ============================================================================
+# DEBUG INFRASTRUCTURE
+# ============================================================================
+
 DEBUG_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/iwd-rofi/debug.log"
 mkdir -p "$(dirname "$DEBUG_LOG")"
+
 debug_log() {
   [ -n "${DEBUG:-}" ] || return 0
-  printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$DEBUG_LOG"
+  
+  # Add session separator on first call
+  if [ ! -f "$DEBUG_LOG.pid" ] || [ "$(cat "$DEBUG_LOG.pid" 2>/dev/null)" != "$$" ]; then
+    printf '\n========== NEW SESSION: %s (PID %s) ==========\n' "$(date '+%F %T')" "$$" >> "$DEBUG_LOG"
+    echo "$$" > "$DEBUG_LOG.pid"
+  fi
+  
+  local msg="$*"
+  
+  # Filter out potential secrets from log messages
+  msg=$(echo "$msg" | sed -E 's/(--passphrase[= ])[^ ]*/\1***REDACTED***/g')
+  msg=$(echo "$msg" | sed -E 's/(passphrase[= ])[^ ]*/\1***REDACTED***/g')
+  msg=$(echo "$msg" | sed -E 's/"s" "[^"]*"/"s" "***REDACTED***"/g')
+  
+  printf '%s %s\n' "$(date '+%F %T')" "$msg" >> "$DEBUG_LOG"
 }
 
-# Safe wrappers so we can log every call when DEBUG=1
 BUS() {
-  debug_log "busctl $*"
-  command busctl --no-pager "$@"
+  local timeout=3
+  local safe_log=1
+  
+  # Longer timeout for connection operations
+  case "${1:-}" in
+    call)
+      case "${4:-}" in
+        *Connect*|*Scan*|*GetOrderedNetworks*) timeout=15 ;;
+      esac
+      
+      # Check if command might contain secrets
+      for arg in "$@"; do
+        case "$arg" in
+          Connect|RequestPassphrase|*passphrase*)
+            safe_log=0
+            break
+            ;;
+        esac
+      done
+      ;;
+  esac
+  
+  if [ "${safe_log}" -eq 1 ]; then
+    debug_log "busctl --no-pager --timeout=$timeout $*"
+  else
+    debug_log "busctl [command with potential secrets - redacted]"
+  fi
+  
+  command busctl --no-pager --timeout="$timeout" "$@"
 }
 
-IW() {
-  debug_log "iwctl $*"
+IWCTL() {
+  debug_log "iwctl [command potentially redacted]"
   iwctl "$@"
 }
 
 # ============================================================================
-# ZERO-HARDCODE IWD ROFI WIFI MANAGER - FULLY HARDENED
-# ============================================================================
-# - Dynamic D-Bus path discovery
-# - Object path-based tracking (no SSID collisions)
-# - XDG compliant storage
-# - GetOrderedNetworks API (no BSS property assumptions)
-# - No secrets in argv
-# - Adaptive signal unit detection
-# - FUTURE-PROOF: All hardening changes implemented
-# - BELT-AND-SUSPENDERS: rfkill hint, multi-radio preference, polkit once, D-Bus sanity
+# CONFIGURATION & STORAGE
 # ============================================================================
 
-# XDG compliance
 CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/iwd-rofi"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 LOCKFILE="$RUNTIME_DIR/iwd-rofi-$USER.lock"
 
-# File storage
 mkdir -p "$CFG_DIR"
 FAVORITES_FILE="$CFG_DIR/favorites"
 HISTORY_FILE="$CFG_DIR/history"
 touch "$FAVORITES_FILE" "$HISTORY_FILE"
+chmod 600 "$FAVORITES_FILE" "$HISTORY_FILE" 2>/dev/null || true
+chmod 700 "$CFG_DIR" 2>/dev/null || true
 
-# D-Bus constants
 DBUS_SERVICE="net.connman.iwd"
 
-# Global path variables (discovered dynamically)
 DBUS_STATION_PATH=""
 DBUS_DEVICE_PATH=""
 IFACE=""
 
-# Session state
-POLKIT_HINT_SHOWN=""
+# ============================================================================
+# ARGUMENT PARSING
+# ============================================================================
 
-# --- Flag parsing (before CLI handlers) ----------------------------------
 ARGS=()
 DEBUG=""
 SELF_TEST=""
+JSON_MODE=""
+
 for arg in "$@"; do
   case "$arg" in
     --debug)
@@ -299,6 +382,51 @@ for arg in "$@"; do
     --self-test)
       SELF_TEST=1
       ;;
+    --json)
+      JSON_MODE=1
+      ;;
+    --version)
+      echo "IWD Rofi Manager v$SCRIPT_VERSION ($SCRIPT_DATE)"
+      exit 0
+      ;;
+    --help)
+      cat <<EOF
+IWD Rofi WiFi Manager v$SCRIPT_VERSION
+
+USAGE:
+  $(basename "$0") [OPTIONS]
+
+OPTIONS:
+  --toggle      Toggle WiFi on/off (CLI mode)
+  --scan        Trigger network scan (CLI mode)
+  --json        Output current state as JSON (CLI mode)
+  --self-test   Run diagnostics
+  --debug       Enable debug logging
+  --version     Show version
+  --help        Show this help
+
+GUI MODE (default):
+  Interactive WiFi manager with rofi interface
+
+SECURITY:
+  Passwords are briefly visible to root/same-user during D-Bus calls.
+  This is a limitation of CLI IPC but is far more secure than alternatives.
+
+REQUIREMENTS:
+  - iwd (systemd service)
+  - busctl (systemd package)
+  - rofi
+  - notify-send (libnotify)
+  - flock (util-linux)
+
+OPTIONAL:
+  - iwctl (for fallback operations)
+  - rfkill (for hardware switch detection)
+  - jq (for optimized JSON parsing)
+
+EOF
+      exit 0
+      ;;
     *)
       ARGS+=("$arg")
       ;;
@@ -306,7 +434,6 @@ for arg in "$@"; do
 done
 set -- "${ARGS[@]}"
 
-# Enable shell xtrace to debug log when --debug is set
 if [ -n "$DEBUG" ]; then
   exec 9>>"$DEBUG_LOG"
   export BASH_XTRACEFD=9
@@ -315,7 +442,10 @@ if [ -n "$DEBUG" ]; then
   debug_log "===== DEBUG ON (pid $$) ====="
 fi
 
-# Dependency sanity check
+# ============================================================================
+# DEPENDENCY VERIFICATION
+# ============================================================================
+
 missing_deps=()
 for cmd in busctl rofi flock notify-send; do
     if ! command -v "$cmd" &>/dev/null; then
@@ -331,49 +461,120 @@ if [ ${#missing_deps[@]} -gt 0 ]; then
     error_msg="Missing required dependencies: ${missing_deps[*]}\n\nPlease install:\n"
     for dep in "${missing_deps[@]}"; do
         case "$dep" in
-            busctl) error_msg+="- systemd (for busctl)\n" ;;
-            rofi) error_msg+="- rofi\n" ;;
-            flock) error_msg+="- util-linux (for flock)\n" ;;
-            notify-send) error_msg+="- libnotify (for notify-send)\n" ;;
+            busctl) error_msg+="- systemd (provides busctl)\n" ;;
+            rofi) error_msg+="- rofi (menu interface)\n" ;;
+            flock) error_msg+="- util-linux (provides flock)\n" ;;
+            notify-send) error_msg+="- libnotify (provides notify-send)\n" ;;
         esac
     done
-    notify-send "Wi-Fi Error" "$(echo -e "$error_msg")" 2>/dev/null || true
-    echo -e "$error_msg" >&2
+    printf '%b' "$error_msg" >&2
+    command -v notify-send &>/dev/null && notify-send "Wi-Fi Manager Error" "$(printf '%b' "$error_msg")" -u critical || true
     exit 1
 fi
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# PERMISSION CHECK
 # ============================================================================
 
-rofi_pick() {
-    local prompt="$1"
-    shift
-    rofi -dmenu -no-markup -i -p "$prompt" "$@" || true
+if [ "$(id -u)" -ne 0 ]; then
+    if ! id -nG | tr ' ' '\n' | grep -qxE 'network|wheel'; then
+        error_msg="Insufficient permissions\n\nYou must be in the 'network' or 'wheel' group\n\nRun: sudo usermod -aG network $USER\nThen log out and back in"
+        notify-send "Wi-Fi Error" "$(printf '%b' "$error_msg")" -u critical
+        echo "Error: User must be in 'network' or 'wheel' group to control iwd" >&2
+        exit 1
+    fi
+fi
+
+# ============================================================================
+# UI UTILITIES
+# ============================================================================
+
+escape_pango() {
+    # Escape special characters for Rofi Pango markup
+    printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
 }
 
 safe_label() {
     printf '%s' "$1" | tr -d '\000-\037\177'
 }
 
-signal_to_percent() {
-    local signal_raw="$1"
-    local dbm
+pango_safe() {
+    escape_pango "$(safe_label "$1")"
+}
+
+rofi_pick() {
+    local prompt="$1"
+    shift
     
-    if [ "$signal_raw" -lt -200 ] || [ "$signal_raw" -gt 0 ]; then
-        dbm=$(( signal_raw / 100 ))
-    else
-        dbm="$signal_raw"
+    # Get current state for status message
+    local status_msg=""
+    if [ -n "$IFACE" ] && [ -n "$DBUS_STATION_PATH" ]; then
+        local state
+        state=$(dbus_get_station_state 2>/dev/null || echo "unknown")
+        local connected_ssid
+        connected_ssid=$(get_connected_ssid 2>/dev/null || true)
+        
+        if [ -n "$connected_ssid" ]; then
+            local safe_connected
+            safe_connected=$(pango_safe "$connected_ssid")
+            status_msg="$IFACE — Connected to: $safe_connected"
+        else
+            status_msg="$IFACE — State: $state"
+        fi
     fi
     
-    local percent
-    if [ "$dbm" -ge -30 ]; then
+    rofi -dmenu -markup-rows -no-custom -i \
+         -p "$prompt" \
+         -no-fixed-num-lines \
+         -eh 2 \
+         -lines 15 \
+         ${status_msg:+-mesg "$status_msg"} \
+         "$@" || true
+}
+
+# Returns 0 if $1 introspects as interface $2 (e.g., net.connman.iwd.Network / KnownNetwork)
+path_has_interface() {
+  local path="$1" iface="$2"
+  [ -n "$path" ] || return 1
+  BUS introspect "$DBUS_SERVICE" "$path" "$iface" >/dev/null 2>&1
+}
+
+# ============================================================================
+# SIGNAL STRENGTH UTILITIES
+# ============================================================================
+
+signal_to_percent() {
+    local signal_raw="${1:-}"
+    local dbm percent
+    
+    # Validate input is numeric
+    [[ "$signal_raw" =~ ^-?[0-9]+$ ]] || { echo 0; return; }
+    
+    # Handle zero/invalid signal
+    if (( signal_raw == 0 )); then
+        echo 0
+        return
+    fi
+    
+    # Convert centibels to dBm if needed
+    if (( signal_raw < -200 || signal_raw > 0 )); then
+        dbm=$(( signal_raw / 100 ))
+    else
+        dbm=$signal_raw
+    fi
+    
+    # Calculate percentage
+    if (( dbm >= -30 )); then
         percent=100
-    elif [ "$dbm" -le -90 ]; then
+    elif (( dbm <= -90 )); then
         percent=0
     else
         percent=$(( (dbm + 90) * 100 / 60 ))
     fi
+    
+    # Clamp to valid range
+    (( percent < 0 )) && percent=0
+    (( percent > 100 )) && percent=100
     
     echo "$percent"
 }
@@ -392,7 +593,10 @@ get_signal_icon() {
     fi
 }
 
-# HARDENING #4: Security type mapping with passthrough default
+# ============================================================================
+# SECURITY TYPE HANDLING
+# ============================================================================
+
 normalize_security() {
     local sec="$1"
     case "$sec" in
@@ -407,8 +611,74 @@ normalize_security() {
     esac
 }
 
+sec_keyword() {
+  case "$1" in
+    sae|SAE|wpa3|WPA3) echo "sae" ;;
+    psk|PSK|wpa2|WPA2) echo "psk" ;;
+    open|OPEN)         echo "open" ;;
+    owe|OWE)           echo "owe" ;;
+    8021x|EAP|eap)     echo "8021x" ;;
+    *)                 echo "$1" ;;
+  esac
+}
+
 # ============================================================================
-# D-BUS FUNCTIONS
+# IWCTL WRAPPER FUNCTIONS
+# ============================================================================
+
+has_iwctl() { command -v iwctl >/dev/null 2>&1; }
+
+iwctl_scan() {
+  has_iwctl || return 1
+  IWCTL station "$IFACE" scan >/dev/null 2>&1
+}
+
+iwctl_disconnect() {
+  has_iwctl || return 1
+  IWCTL station "$IFACE" disconnect >/dev/null 2>&1
+}
+
+iwctl_power_set() {
+  has_iwctl && IWCTL device "$IFACE" set-property Powered "$1" >/dev/null 2>&1 && return 0
+  if command -v rfkill >/dev/null 2>&1; then
+    if [ "$1" = "true" ]; then
+      rfkill unblock wifi >/dev/null 2>&1 || true
+    else
+      rfkill block wifi   >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+  return 1
+}
+
+# Return "TX 650.0 MBit/s, RX 866.7 MBit/s" (or a subset) by parsing `iw dev <iface> link`
+get_link_rates() {
+  command -v iw >/dev/null 2>&1 || return 1
+  local tx="" rx=""
+  while IFS= read -r line; do
+    case "$line" in
+      *"tx bitrate"*)
+        tx=$(printf '%s' "${line#*:}" | awk '{print $1" "$2}')
+        ;;
+      *"rx bitrate"*)
+        rx=$(printf '%s' "${line#*:}" | awk '{print $1" "$2}')
+        ;;
+    esac
+  done < <(iw dev "$IFACE" link 2>/dev/null)
+
+  [ -z "$tx" ] && [ -z "$rx" ] && return 1
+
+  if [ -n "$tx" ] && [ -n "$rx" ]; then
+    printf '%s' "TX $tx, RX $rx"
+  elif [ -n "$tx" ]; then
+    printf '%s' "TX $tx"
+  else
+    printf '%s' "RX $rx"
+  fi
+}
+
+# ============================================================================
+# D-BUS: DEVICE OPERATIONS
 # ============================================================================
 
 dbus_get_device_powered() {
@@ -417,10 +687,15 @@ dbus_get_device_powered() {
 
 dbus_set_device_powered() {
     local state="$1"
-    BUS set-property "$DBUS_SERVICE" "$DBUS_DEVICE_PATH" net.connman.iwd.Device Powered b "$state" >/dev/null 2>&1
+    BUS set-property "$DBUS_SERVICE" "$DBUS_DEVICE_PATH" net.connman.iwd.Device Powered b "$state" >/dev/null 2>&1 && return 0
+    iwctl_power_set "$state" && return 0
+    return 1
 }
 
-# HARDENING #2: Flexible state check (prefix matching)
+# ============================================================================
+# D-BUS: STATION STATE OPERATIONS
+# ============================================================================
+
 is_connected_state() {
     local state="$1"
     case "$state" in
@@ -430,10 +705,10 @@ is_connected_state() {
 }
 
 is_trying_to_connect() {
-    local state="$1"
-    case "$state" in
-        disconnected) return 1 ;;
-        *) return 0 ;;
+    case "$1" in
+        associating*|configuring*|connecting*|roaming*) return 0 ;;
+        connected*|online*|disconnected*|idle*|scanning*) return 1 ;;
+        *) return 1 ;;
     esac
 }
 
@@ -453,259 +728,550 @@ dbus_get_connected_network_path() {
 }
 
 dbus_scan_networks() {
-    BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station Scan >/dev/null 2>&1
+    BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station Scan >/dev/null 2>&1 && return 0
+    iwctl_scan && return 0
+    return 1
 }
 
 dbus_disconnect() {
-    BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station Disconnect >/dev/null 2>&1
+    BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station Disconnect >/dev/null 2>&1 && return 0
+    iwctl_disconnect && return 0
+    return 1
 }
 
-# HARDENING #1: GetOrderedNetworks-based enumeration (no BSS property assumptions)
+get_connected_ssid() {
+  local p
+  p=$(dbus_get_connected_network_path) || true
+  [ -z "$p" ] && { echo ""; return 0; }
+  BUS get-property "$DBUS_SERVICE" "$p" net.connman.iwd.Network Name 2>/dev/null | cut -d'"' -f2
+}
+
+# ============================================================================
+# D-BUS: NETWORK ENUMERATION
+# ============================================================================
+
+# Fallback: list Network objects under the chosen Station (no GetOrderedNetworks)
+list_network_paths_under_station() {
+  local station="$1"
+  BUS tree "$DBUS_SERVICE" --list 2>/dev/null \
+    | awk -v P="$station" 'index($0,P"/")==1 && /_psk$|_8021x$|\/network/ {print}'
+}
+
 dbus_get_networks() {
     local service="$DBUS_SERVICE"
-    local -A networks=()        # path -> "signal|ssid|sec"
-    local -A seen_keys=()       # "SSID|Type" -> 1 (dedup on both)
-    
-    # Call GetOrderedNetworks to get paths + signal strength
-    # Format: a(on) N "path1" signal1 "path2" signal2 ...
-    local ordered_output
-    ordered_output=$(BUS call "$service" "$DBUS_STATION_PATH" net.connman.iwd.Station GetOrderedNetworks 2>/dev/null) || return 1
-    
-    # Parse the GetOrderedNetworks output
-    # Remove the type signature and count, extract path+signal pairs
-    local cleaned
-    cleaned=$(echo "$ordered_output" | sed 's/^a(on) [0-9]* //')
-    
-    # Parse pairs: "path" signal "path" signal ...
-    local current_path=""
-    local parse_next_as="path"
-    
-    while read -r token; do
-        [ -z "$token" ] && continue
-        
-        if [ "$parse_next_as" = "path" ]; then
-            # Remove quotes from path
-            current_path=$(echo "$token" | tr -d '"')
-            parse_next_as="signal"
-        else
-            # This is the signal value (in centi-dBm)
-            local signal_centibel="$token"
-            
-            # Skip invalid paths
-            if [ -z "$current_path" ]; then
-                parse_next_as="path"
-                continue
-            fi
-            
-            # Get Name and Type from the network object
-            local name sec
-            name=$(BUS get-property "$service" "$current_path" net.connman.iwd.Network Name 2>/dev/null | cut -d'"' -f2)
-            sec=$(BUS get-property "$service" "$current_path" net.connman.iwd.Network Type 2>/dev/null | cut -d'"' -f2)
-            
-            [ -z "$name" ] && { parse_next_as="path"; continue; }
-            [ -z "$sec" ] && sec="open"
-            
-            # Dedup on SSID|Type (dual-mode APs won't collapse)
-            local dedup_key="${name}|${sec}"
-            if [ -n "${seen_keys[$dedup_key]:-}" ]; then
-                parse_next_as="path"
-                continue
-            fi
-            seen_keys["$dedup_key"]=1
-            
-            # Store: signal is in centi-dBm, convert to dBm (*100 format for integer math)
-            # GetOrderedNetworks already gives us centi-dBm (e.g., -5700 = -57.00 dBm)
-            networks["$current_path"]="$signal_centibel|$name|$sec"
-            
-            parse_next_as="path"
+    local -A networks=()
+    local -A seen_keys=()
+
+    # Try JSON parsing first (fast path if jq exists)
+    if command -v jq >/dev/null 2>&1; then
+        local json_result
+        if json_result=$(BUS call --json=short "$service" "$DBUS_STATION_PATH" net.connman.iwd.Station GetOrderedNetworks 2>/dev/null); then
+            while IFS=$'\t' read -r path signal; do
+                [ -z "$path" ] && continue
+                local name sec
+                name=$(BUS get-property "$service" "$path" net.connman.iwd.Network Name 2>/dev/null | cut -d'"' -f2)
+                sec=$(BUS get-property "$service" "$path" net.connman.iwd.Network Type 2>/dev/null | cut -d'"' -f2)
+                [ -z "$name" ] && continue
+                [ -z "$sec" ] && sec="open"
+                local key="${name}|${sec}"
+                if [ -z "${seen_keys[$key]:-}" ]; then
+                    seen_keys["$key"]=1
+                    local dbm=$(( signal / 100 ))
+                    local percent; percent=$(signal_to_percent "$dbm")
+                    printf '%s|%s|%s|%s\n' "$path" "$name" "$percent" "$sec"
+                fi
+            done < <(echo "$json_result" | jq -r '.data[][] | select(.[0] != null) | @tsv' 2>/dev/null) | sort -t'|' -k3 -rn
+            return 0
         fi
-    done < <(echo "$cleaned" | xargs -n1)
-    
-    # Nothing? Signal up empty
+    fi
+
+    # Text parser path
+    local ordered_output
+    ordered_output=$(BUS call "$service" "$DBUS_STATION_PATH" net.connman.iwd.Station GetOrderedNetworks 2>/dev/null || true)
+
+    if [ -z "$ordered_output" ]; then
+        # Fallback: enumerate direct Network children (no ordering info)
+        while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            local name sec
+            name=$(BUS get-property "$service" "$p" net.connman.iwd.Network Name 2>/dev/null | cut -d'"' -f2)
+            sec=$(BUS get-property "$service" "$p" net.connman.iwd.Network Type 2>/dev/null | cut -d'"' -f2)
+            [ -z "$name" ] && continue
+            [ -z "$sec" ] && sec="open"
+            # Try to get Signal if present, otherwise 0
+            local sig dbm percent
+            sig=$(BUS get-property "$service" "$p" net.connman.iwd.Network Signal 2>/dev/null | awk '{print $2}')
+            if [[ "$sig" =~ ^-?[0-9]+$ ]]; then
+                dbm=$(( sig / 100 ))
+                percent=$(signal_to_percent "$dbm")
+            else
+                percent=0
+            fi
+            printf '%s|%s|%s|%s\n' "$p" "$name" "$percent" "$sec"
+        done < <(list_network_paths_under_station "$DBUS_STATION_PATH") \
+        | sort -t'|' -k3 -rn
+        return 0
+    fi
+
+    # Normal path: parse a(on) "path" signal ...
+    local expect="path" cur_path=""
+    while IFS= read -r tok; do
+        [ -z "$tok" ] && continue
+        if [ "$expect" = "path" ]; then
+            if [[ $tok =~ \"(/net/connman/iwd/[^\"]+)\" ]]; then
+                cur_path="${BASH_REMATCH[1]}"; expect="signal"
+            fi
+        else
+            if [[ "$tok" =~ (-?[0-9]+) ]]; then
+                local cent="${BASH_REMATCH[1]}"
+                if [ -n "$cur_path" ]; then
+                    local name sec
+                    name=$(BUS get-property "$service" "$cur_path" net.connman.iwd.Network Name 2>/dev/null | cut -d'"' -f2)
+                    sec=$(BUS get-property "$service" "$cur_path" net.connman.iwd.Network Type 2>/dev/null | cut -d'"' -f2)
+                    [ -z "$name" ] && { expect="path"; cur_path=""; continue; }
+                    [ -z "$sec" ] && sec="open"
+                    local key="${name}|${sec}"
+                    if [ -z "${seen_keys[$key]:-}" ]; then
+                        seen_keys["$key"]=1
+                        networks["$cur_path"]="$cent|$name|$sec"
+                    fi
+                fi
+            fi
+            expect="path"; cur_path=""
+        fi
+    done < <(printf '%s\n' "$ordered_output" | sed 's/[ \t]\+/\n/g')
+
     [ "${#networks[@]}" -eq 0 ] && return 1
-    
-    # Emit: path|ssid|signal%|sec
-    # Note: Already sorted by GetOrderedNetworks, but we'll sort again for consistency
-    for path in "${!networks[@]}"; do
-        local signal_centibel percent ssid sec_out
-        signal_centibel=$(echo "${networks[$path]}" | cut -d'|' -f1)
-        
-        # Convert centi-dBm to dBm for signal_to_percent
-        # -5700 centi-dBm = -57 dBm
-        local signal_dbm=$((signal_centibel / 100))
-        percent=$(signal_to_percent "$signal_dbm")
-        
-        ssid=$(echo "${networks[$path]}" | cut -d'|' -f2)
-        sec_out=$(echo "${networks[$path]}" | cut -d'|' -f3)
-        printf '%s|%s|%s|%s\n' "$path" "$ssid" "$percent" "$sec_out"
+    for p in "${!networks[@]}"; do
+        local cent name sec
+        IFS='|' read -r cent name sec <<< "${networks[$p]}"
+        local dbm=$(( cent / 100 ))
+        local percent; percent=$(signal_to_percent "$dbm")
+        printf '%s|%s|%s|%s\n' "$p" "$name" "$percent" "$sec"
     done | sort -t'|' -k3 -rn
 }
 
+# ============================================================================
+# D-BUS: NETWORK CONNECTION OPERATIONS
+# ============================================================================
+
 ensure_station() {
-    if ! command -v iwctl &>/dev/null; then
-        notify-send "Wi-Fi Error" "iwctl not available"
-        return 1
-    fi
-    
-    IW <<<"station $IFACE show" >/dev/null 2>&1 || {
-        notify-send "Wi-Fi Error" "Station '$IFACE' not found by iwctl"
-        return 1
-    }
+    has_iwctl || return 1
+    IWCTL station "$IFACE" show >/dev/null 2>&1
 }
 
 get_best_bssid_for_group() {
-    local group_path="$1" service="$DBUS_SERVICE"
-    local best_bssid="" best_sig=-32768
-
-    # Enumerate BSS children under this network path
+    local group_path="$1" 
+    local service="$DBUS_SERVICE"
+    local best_bssid="" best_signal=-32768
+    
+    # Try GetOrderedBSSes first (newer iwd)
+    if BUS call "$service" "$group_path" net.connman.iwd.Network GetOrderedBSSes >/dev/null 2>&1; then
+        local bss_list
+        bss_list=$(BUS call "$service" "$group_path" net.connman.iwd.Network GetOrderedBSSes 2>/dev/null | grep -o '"/[^"]*"' | head -1 | tr -d '"')
+        if [ -n "$bss_list" ]; then
+            best_bssid=$(BUS get-property "$service" "$bss_list" net.connman.iwd.BSS Address 2>/dev/null | cut -d'"' -f2)
+            [ -n "$best_bssid" ] && { echo "$best_bssid"; return 0; }
+        fi
+    fi
+    
+    # Fallback: Find strongest BSS manually
     while IFS= read -r bss; do
         [ -z "$bss" ] && continue
-        local mac sig
+        local mac signal
         mac=$(BUS get-property "$service" "$bss" net.connman.iwd.BSS Address 2>/dev/null | cut -d'"' -f2) || continue
-        # Note: We can't get Signal from BSS, but Address still works for BSSID targeting
-        # This function is only used for fallback connection attempts
-        if [ -n "$mac" ]; then
+        signal=$(BUS get-property "$service" "$bss" net.connman.iwd.BSS Signal 2>/dev/null | awk '{print $2}') || continue
+        
+        if [ -n "$mac" ] && [ "$signal" -gt "$best_signal" ]; then
+            best_signal="$signal"
             best_bssid="$mac"
-            break  # Just take the first valid BSSID we find
         fi
-    done < <(BUS tree "$service" --list 2>/dev/null | awk -v p="$group_path" '$0 ~ "^"p"/"')
-
-    [ -n "$best_bssid" ] && printf '%s\n' "$best_bssid"
+    done < <(BUS tree "$service" --list 2>/dev/null | awk -v p="$group_path" 'index($0, p"/")==1')
+    
+    [ -n "$best_bssid" ] && echo "$best_bssid"
 }
 
-# HARDENING #3: Exit codes first, text as hint
+known_network_exists_for_ssid() {
+  local ssid="$1"
+  # Walk KnownNetwork objects and compare Name
+  BUS tree "$DBUS_SERVICE" --list 2>/dev/null \
+    | while read -r p; do
+        [ -z "$p" ] && continue
+        BUS introspect "$DBUS_SERVICE" "$p" net.connman.iwd.KnownNetwork >/dev/null 2>&1 || continue
+        local nm
+        nm=$(BUS get-property "$DBUS_SERVICE" "$p" net.connman.iwd.KnownNetwork Name 2>/dev/null | cut -d'"' -f2)
+        [ "$nm" = "$ssid" ] && { echo 1; break; }
+      done
+}
+
 dbus_connect_network() {
     local group_path="$1"
     local passphrase="$2"
-    
-    ensure_station || return 1
 
-    local ssid
+    local ssid connect_sig
     ssid=$(BUS get-property "$DBUS_SERVICE" "$group_path" net.connman.iwd.Network Name 2>/dev/null | cut -d'"' -f2) || ssid=""
+    connect_sig="$(BUS introspect "$DBUS_SERVICE" "$group_path" net.connman.iwd.Network 2>/dev/null | awk '$1==".Connect"{print $3; exit}')"
 
-    # Try D-Bus first
+    # If Connect is no-arg and a passphrase was provided BUT the network isn't Known yet,
+    # skip D-Bus (no place to put pass) and use iwctl to seed a .psk
+    if { [ -z "$connect_sig" ] || [ "$connect_sig" = "-" ]; } && [ -n "$passphrase" ]; then
+        ensure_station || return 1
+        IWCTL --passphrase="$passphrase" station "$IFACE" connect "$ssid" >/dev/null 2>&1 && return 0
+    fi
+
+    # Try D-Bus first where we can
     if [ -z "$passphrase" ]; then
-        BUS call "$DBUS_SERVICE" "$group_path" net.connman.iwd.Network Connect >/dev/null 2>&1 && return 0
-    else
-        BUS call "$DBUS_SERVICE" "$group_path" net.connman.iwd.Network Connect "s" "$passphrase" >/dev/null 2>&1 && return 0
-    fi
-
-    # If D-Bus connect failed and we're not root, hint about permissions/Polkit (once per session)
-    if [ "$(id -u)" -ne 0 ] && [ -z "$POLKIT_HINT_SHOWN" ]; then
-        notify-send "Wi-Fi" "D-Bus connect failed — attempting iwctl fallback (check Polkit rules if this persists)."
-        POLKIT_HINT_SHOWN=1
-    fi
-
-    # Fall back to iwctl (check exit code only)
-    if [ -z "$passphrase" ]; then
-        IW station "$IFACE" connect "$ssid" >/dev/null 2>&1 && return 0
-    else
-        IW --passphrase="$passphrase" station "$IFACE" connect "$ssid" >/dev/null 2>&1 && return 0
-    fi
-    
-    # Try BSSID fallback
-    local bssid
-    bssid=$(get_best_bssid_for_group "$group_path")
-    
-    if [ -n "$bssid" ]; then
-        IW <<<"station $IFACE scan" >/dev/null 2>&1 || true
-        sleep 1
-        
-        if [ -z "$passphrase" ]; then
-            IW station "$IFACE" connect-bssid "$bssid" >/dev/null 2>&1 && return 0
-        else
-            IW --passphrase="$passphrase" station "$IFACE" connect-bssid "$bssid" >/dev/null 2>&1 && return 0
+        # No-arg Connect works if the network is already Known
+        if [ -n "$(known_network_exists_for_ssid "$ssid")" ] || [ "$connect_sig" = "-" ]; then
+            BUS call "$DBUS_SERVICE" "$group_path" net.connman.iwd.Network Connect >/dev/null 2>&1 && return 0
         fi
+    else
+        case "$connect_sig" in
+            s)
+                BUS call "$DBUS_SERVICE" "$group_path" net.connman.iwd.Network Connect s -- "$passphrase" >/dev/null 2>&1 && return 0
+                ;;
+            a*)
+                BUS call "$DBUS_SERVICE" "$group_path" net.connman.iwd.Network Connect a{sv} 1 "Passphrase" s "$passphrase" >/dev/null 2>&1 && return 0
+                ;;
+            -|"")
+                : # fall through to iwctl
+                ;;
+        esac
+    fi
+
+    # Fallback (brand-new networks or when DBus refused)
+    ensure_station || return 1
+    if [ -z "$passphrase" ]; then
+        IWCTL station "$IFACE" connect "$ssid" >/dev/null 2>&1 && return 0
+    else
+        IWCTL --passphrase="$passphrase" station "$IFACE" connect "$ssid" >/dev/null 2>&1 && return 0
     fi
 
     return 1
 }
 
-dbus_forget_network() {
-    local ssid="$1"
-    
-    if ! command -v iwctl &>/dev/null; then
-        return 1
-    fi
-    
-    IW <<EOF 2>/dev/null
-known-networks "$ssid" forget
-EOF
+station_supports() {
+  local method="$1"
+  BUS introspect "$DBUS_SERVICE" "$DBUS_STATION_PATH" 2>/dev/null \
+    | grep -q " $method("
 }
 
-# --- Self-test ---------------------------------------------------------------
-self_test() {
-    # Don't let -e/ERR trap preempt our friendly messages in here
-    set +e
-    
-    # 0) Paths
-    if ! discover_iwd_paths; then
-        notify-send "Wi-Fi Self-Test" "Failed: discover_iwd_paths"
-        return 1
+find_known_network_path_by_name() {
+  local want="$1" 
+  local p name
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    BUS introspect "$DBUS_SERVICE" "$p" net.connman.iwd.KnownNetwork >/dev/null 2>&1 || continue
+    name=$(BUS get-property "$DBUS_SERVICE" "$p" net.connman.iwd.KnownNetwork Name 2>/dev/null | cut -d'"' -f2)
+    [ "$name" = "$want" ] && { printf '%s\n' "$p"; return 0; }
+  done < <(BUS tree "$DBUS_SERVICE" --list 2>/dev/null | grep '^/net/connman/iwd/')
+  return 1
+}
+
+# Return ALL KnownNetwork object paths whose Name == SSID
+list_knownnetwork_paths_for_ssid() {
+  local ssid="$1"
+  BUS tree "$DBUS_SERVICE" --list 2>/dev/null \
+    | while read -r p; do
+        [ -z "$p" ] && continue
+        BUS introspect "$DBUS_SERVICE" "$p" net.connman.iwd.KnownNetwork >/dev/null 2>&1 || continue
+        # Name may fail if object disappears mid-iteration; ignore that
+        local nm
+        nm=$(BUS get-property "$DBUS_SERVICE" "$p" net.connman.iwd.KnownNetwork Name 2>/dev/null | cut -d'"' -f2 || true)
+        [ -n "$nm" ] && [ "$nm" = "$ssid" ] && printf '%s\n' "$p"
+      done
+}
+
+dbus_connect_hidden_network() {
+  local ssid="$1" pass="$2" sec_raw="$3"
+  local sec
+  sec="$(sec_keyword "$sec_raw")"
+  
+  if station_supports "ConnectHiddenNetwork"; then
+    local n=0 
+    local -a args=()
+    [ -n "$sec" ]  && { args+=("Type" s "$sec"); n=$((n+1)); }
+    if [ -n "$pass" ] && [ "$sec" != "open" ] && [ "$sec" != "owe" ]; then
+      args+=("Passphrase" s "$pass"); n=$((n+1))
     fi
-    
-    # 1) Device.Powered
-    if ! BUS get-property "$DBUS_SERVICE" "$DBUS_DEVICE_PATH" net.connman.iwd.Device Powered >/dev/null; then
-        notify-send "Wi-Fi Self-Test" "Failed: Device.Powered"
-        return 1
+    BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station ConnectHiddenNetwork \
+      -- s "$ssid" a{sv} $n "${args[@]}" >/dev/null 2>&1 && return 0
+  fi
+  
+  local kn_path
+  kn_path="$(find_known_network_path_by_name "$ssid" || true)"
+  if [ -n "$kn_path" ] && station_supports "ConnectKnownNetwork"; then
+    BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station ConnectKnownNetwork -- o "$kn_path" \
+      >/dev/null 2>&1 && return 0
+  fi
+  
+  return 1
+}
+
+forget_network_by_ssid() {
+  local ssid="$1"
+  local known_path="${2:-}"
+
+  # We never want "forget" to abort the script. Be forgiving.
+  local deleted=0
+
+  # 1) If caller passed an exact path, try it first (ignore failures)
+  if [ -n "$known_path" ]; then
+    BUS call "$DBUS_SERVICE" "$known_path" net.connman.iwd.KnownNetwork Forget >/dev/null 2>&1 && deleted=1 || true
+  fi
+
+  # 2) Forget ALL matching KnownNetwork objects by SSID (there can be multiple generations)
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    BUS call "$DBUS_SERVICE" "$p" net.connman.iwd.KnownNetwork Forget >/dev/null 2>&1 && deleted=1 || true
+  done < <(list_knownnetwork_paths_for_ssid "$ssid")
+
+  # 3) Best-effort file cleanup (don’t fail if not root/permission denied)
+  #    This is belt-and-suspenders; iwd should remove its own .psk/.8021x,
+  #    but older states or mismatched filenames sometimes linger.
+  {
+    # Try both raw and sanitized filenames (ASCII/underscore variants)
+    local raw="$ssid"
+    local san
+    san=$(printf '%s' "$ssid" | iconv -t ASCII//TRANSLIT 2>/dev/null | sed 's/[^-_.[:alnum:]]/_/g' || printf '%s' "$ssid")
+    rm -f "/var/lib/iwd/${raw}.psk" "/var/lib/iwd/${raw}.8021x" \
+          "/var/lib/iwd/${san}.psk" "/var/lib/iwd/${san}.8021x"
+  } >/dev/null 2>&1 || true
+
+  # 4) iwctl fallback (idempotent; ignore failures)
+  if has_iwctl; then
+    IWCTL known-networks "$ssid" forget >/dev/null 2>&1 && deleted=1 || true
+  fi
+
+  # 5) Don’t break callers: success if we deleted anything or there was nothing to delete
+  return 0
+}
+
+# ============================================================================
+# KNOWN NETWORK HEALTH + REPAIR CONNECT
+# ============================================================================
+
+is_knownnetwork_healthy() {
+  local ssid="$1"
+  local kn
+  kn="$(find_known_network_path_by_name "$ssid" 2>/dev/null || true)"
+  [ -z "$kn" ] && return 0  # no record = “healthy” / nothing to fix
+  BUS get-property "$DBUS_SERVICE" "$kn" net.connman.iwd.KnownNetwork Name >/dev/null 2>&1
+}
+
+attempt_connect_with_repair() {
+  local net_path="$1" ssid="$2" pass="$3"
+
+  # If the user supplied a password and a KnownNetwork exists, purge it first.
+  # This avoids iwd trying to load a bad .psk and erroring before using our new pass.
+  local kn
+  kn="$(find_known_network_path_by_name "$ssid" 2>/dev/null || true)"
+  if [ -n "$pass" ] && [ -n "$kn" ]; then
+    forget_network_by_ssid "$ssid" "" || true
+    sleep 1
+  fi
+
+  # First try: DBus → wait
+  if dbus_connect_network "$net_path" "$pass"; then
+    wait_for_connection "$net_path" "$ssid"; rc=$?
+    [ $rc -eq 0 ] && return 0
+
+    # If we somehow still hit auth failure, try one more purge+retry
+    if [ $rc -eq 2 ]; then
+      forget_network_by_ssid "$ssid" "" || true
+      sleep 1
+      if dbus_connect_network "$net_path" "$pass"; then
+        wait_for_connection "$net_path" "$ssid" && return 0
+      fi
     fi
-    
-    # 2) Station.State
-    if ! BUS get-property "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station State >/dev/null; then
-        notify-send "Wi-Fi Self-Test" "Failed: Station.State"
-        return 1
-    fi
-    
-    # 3) Station.ConnectedNetwork
-    if ! BUS get-property "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station ConnectedNetwork >/dev/null; then
-        notify-send "Wi-Fi Self-Test" "Failed: Station.ConnectedNetwork"
-        return 1
-    fi
-    
-    # 4) GetOrderedNetworks is callable
-    if ! BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station GetOrderedNetworks >/dev/null 2>&1; then
-        notify-send "Wi-Fi Self-Test" "Failed: GetOrderedNetworks call"
-        return 1
-    fi
-    
-    # 5) Parse GetOrderedNetworks output
-    local test_output
-    test_output=$(BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station GetOrderedNetworks 2>/dev/null)
-    if [ -z "$test_output" ]; then
-        notify-send "Wi-Fi Self-Test" "Failed: GetOrderedNetworks returned empty"
-        return 1
-    fi
-    
-    notify-send "Wi-Fi Self-Test" "All checks passed"
-    return 0
+  fi
+
+  # Final fallback handled inside dbus_connect_network (iwctl)
+  return 1
 }
 
 wait_for_connection() {
     local expected_path="$1"
     local expected_ssid="$2"
+    local max_wait=30
+    local wait_iter=0
+    local fail_count=0
     
-    for i in {1..10}; do
-        local state=$(dbus_get_station_state)
-        local connected_path=$(dbus_get_connected_network_path)
+    while (( wait_iter < max_wait )); do
+        wait_iter=$((wait_iter + 1))
         
-        if [ "$connected_path" = "$expected_path" ] && is_connected_state "$state"; then
-            echo "$expected_path|$expected_ssid|$(date '+%Y-%m-%d %H:%M:%S')" >> "$HISTORY_FILE"
-            notify-send "Wi-Fi" "Connected to $expected_ssid"
-            return 0
+        local state p name
+        state=$(dbus_get_station_state 2>/dev/null || echo "unknown")
+        p=$(dbus_get_connected_network_path 2>/dev/null || true)
+        name=$(get_connected_ssid 2>/dev/null || true)
+        
+        # Success condition
+        if { [ -n "$expected_path" ] && [ "$p" = "$expected_path" ]; } \
+           || { [ -z "$expected_path" ] && [ -n "$name" ] && [ "$name" = "$expected_ssid" ]; }; then
+            if is_connected_state "$state"; then
+                (
+                    flock -x 201
+                    echo "${p:-/}|$expected_ssid|$(date '+%Y-%m-%d %H:%M:%S')" >> "$HISTORY_FILE"
+                ) 201>"$HISTORY_FILE.lock"
+                notify-send "Wi-Fi" "Connected to $(safe_label "$expected_ssid")"
+                return 0
+            fi
         fi
         
-        if ! is_trying_to_connect "$state" && [ "$i" -gt 3 ]; then
-            break
-        fi
+        # Detect authentication failures early
+        case "$state" in
+            disconnected*|idle*)
+                fail_count=$((fail_count + 1))
+                if (( fail_count >= 3 && wait_iter > 5 )); then
+                    # Likely authentication failure
+                    notify-send "Wi-Fi" "Authentication failed for $(safe_label "$expected_ssid")"
+                    return 2  # Special code: wrong password
+                fi
+                ;;
+        esac
         
         sleep 1
     done
     
-    notify-send "Wi-Fi" "Failed to connect to $expected_ssid"
+    notify-send "Wi-Fi" "Failed to connect to $(safe_label "$expected_ssid")"
     return 1
 }
 
-# HARDENING #6: Favorites by content (SSID|Type|Device)
+# ============================================================================
+# NETWORK DETAILS VIEW
+# ============================================================================
+
+show_network_details() {
+    local net_path="${1:-}"
+    local ssid_in="${2:-}"
+
+    # Decide what kind of object we have
+    local mode=""  # "network" | "known"
+    if path_has_interface "$net_path" net.connman.iwd.Network; then
+        mode="network"
+    elif path_has_interface "$net_path" net.connman.iwd.KnownNetwork; then
+        mode="known"
+    else
+        # Try to recover using the SSID (prefer KnownNetwork, then live Network)
+        if [ -n "$ssid_in" ]; then
+            local kn_path
+            kn_path="$(find_known_network_path_by_name "$ssid_in" 2>/dev/null || true)"
+            if [ -n "$kn_path" ] && path_has_interface "$kn_path" net.connman.iwd.KnownNetwork; then
+                net_path="$kn_path"
+                mode="known"
+            else
+                local live_path
+                live_path="$(find_network_by_ssid "$ssid_in" "$(dbus_get_networks 2>/dev/null || true)" || true)"
+                if [ -n "$live_path" ] && path_has_interface "$live_path" net.connman.iwd.Network; then
+                    net_path="$live_path"
+                    mode="network"
+                fi
+            fi
+        fi
+    fi
+
+    # If still nothing valid, show minimal info
+    if [ -z "$mode" ]; then
+        local safe_ssid
+        safe_ssid="$(pango_safe "${ssid_in:-Unknown}")"
+        local details="<b>Network:</b> $safe_ssid
+No further details available (AP out of range and not saved)."
+        printf '%b' "Close\n" | rofi -dmenu -markup-rows -p "Network Details" -mesg "$details"
+        return 0
+    fi
+
+    # Build the details with REAL newlines (no \n literals)
+    local details=""
+    local safe_ssid=""
+    local ip=""
+    local last_connect=""
+    local current_path=""
+
+    if [ "$mode" = "known" ]; then
+        # KnownNetwork: stored metadata only
+        local kn_name
+        kn_name="$(BUS get-property "$DBUS_SERVICE" "$net_path" net.connman.iwd.KnownNetwork Name 2>/dev/null | cut -d'"' -f2 || true)"
+        safe_ssid="$(pango_safe "${kn_name:-$ssid_in}")"
+        details="<b>Network (saved):</b> $safe_ssid
+<i>Out of range or not currently visible.</i>"
+    else
+        # Live Network
+        local name sec_type signal
+        name="$(BUS get-property "$DBUS_SERVICE" "$net_path" net.connman.iwd.Network Name 2>/dev/null | cut -d'"' -f2 || true)"
+        sec_type="$(BUS get-property "$DBUS_SERVICE" "$net_path" net.connman.iwd.Network Type 2>/dev/null | cut -d'"' -f2 || true)"
+        signal="$(BUS get-property "$DBUS_SERVICE" "$net_path" net.connman.iwd.Network Signal 2>/dev/null | awk '{print $2}' || true)"
+
+        safe_ssid="$(pango_safe "${name:-$ssid_in}")"
+        details="<b>Network:</b> $safe_ssid"
+        if [ -n "$sec_type" ]; then
+            details="$details
+<b>Security:</b> $(normalize_security "$sec_type")"
+        fi
+
+        if [[ "$signal" =~ ^-?[0-9]+$ ]]; then
+            local dbm=$(( signal / 100 ))
+            local percent
+            percent="$(signal_to_percent "$dbm")"
+            details="$details
+<b>Signal:</b> ${dbm} dBm (${percent}%)"
+        fi
+
+        current_path="$(dbus_get_connected_network_path 2>/dev/null || true)"
+        if [ -n "$current_path" ] && [ "$net_path" = "$current_path" ]; then
+            details="$details
+<b>Status:</b> Connected"
+            ip="$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1 || true)"
+            if [ -n "$ip" ]; then
+                details="$details
+<b>IP Address:</b> $ip"
+            fi
+            last_connect="$(get_history "$net_path" | head -1 | cut -d'|' -f3 || true)"
+            if [ -n "$last_connect" ]; then
+                details="$details
+<b>Last Connected:</b> $last_connect"
+            fi
+	    local lr
+            lr="$(get_link_rates 2>/dev/null || true)"
+            if [ -n "$lr" ]; then
+                details="$details
+<b>Link Rate:</b> $lr"
+            fi
+        fi
+    fi
+
+    # Show the info
+printf '%b' "Close\n" | rofi -dmenu -markup-rows -p "Network Details" -mesg "$details"
+}
+
+# ============================================================================
+# RFKILL STATUS CHECK
+# ============================================================================
+
+check_rfkill_status() {
+    command -v rfkill >/dev/null 2>&1 || return 0
+    
+    local out soft_blocked hard_blocked
+    out="$(rfkill list wifi 2>/dev/null || rfkill list 2>/dev/null || true)"
+    soft_blocked=$(printf '%s\n' "$out" | grep -Eo 'Soft blocked: (yes|no)' | awk '{print $3}')
+    hard_blocked=$(printf '%s\n' "$out" | grep -Eo 'Hard blocked: (yes|no)' | awk '{print $3}')
+    
+    if [ "$hard_blocked" = "yes" ]; then
+        notify-send "Wi-Fi" "Hardware RF-Kill is ON\n\nCheck physical Wi-Fi switch/button" -u critical
+        return 1
+    fi
+    
+    if [ "$soft_blocked" = "yes" ]; then
+        notify-send "Wi-Fi" "Software RF-Kill is ON\n\nTry: rfkill unblock wifi" -u normal
+        return 1
+    fi
+    
+    return 0
+}
+
+# ============================================================================
+# FAVORITES MANAGEMENT
+# ============================================================================
+
 is_favorite() {
   local ssid="$1" sec_type="$2" device="$3"
   local fav_line="${ssid}|${sec_type}|${device}"
@@ -713,22 +1279,45 @@ is_favorite() {
 }
 
 add_favorite() {
-  local ssid="$1" sec_type="$2" device="$3"
-  local fav_line="${ssid}|${sec_type}|${device}"
-  echo "$fav_line" >> "$FAVORITES_FILE"
-  sort -u "$FAVORITES_FILE" -o "$FAVORITES_FILE"
+    local ssid="$1" sec_type="$2" device="$3"
+    local line="${ssid}|${sec_type}|${device}"
+    
+    # Lock the favorites file during read-modify-write
+    (
+        flock -x 200  # Exclusive lock
+        { printf '%s\n' "$line"; cat "$FAVORITES_FILE" 2>/dev/null; } \
+            | sort -u > "$FAVORITES_FILE.tmp" && \
+            mv "$FAVORITES_FILE.tmp" "$FAVORITES_FILE"
+    ) 200>"$FAVORITES_FILE.lock"
 }
 
 remove_favorite() {
-  local ssid="$1" sec_type="$2" device="$3"
-  local fav_line="${ssid}|${sec_type}|${device}"
-  grep -Fvx "$fav_line" "$FAVORITES_FILE" > "$FAVORITES_FILE.tmp" 2>/dev/null || :
-  mv "$FAVORITES_FILE.tmp" "$FAVORITES_FILE"
+    local ssid="$1" sec_type="$2" device="$3"
+    local fav_line="${ssid}|${sec_type}|${device}"
+    
+    (
+        flock -x 200
+        grep -Fvx "$fav_line" "$FAVORITES_FILE" > "$FAVORITES_FILE.tmp" 2>/dev/null || :
+        mv "$FAVORITES_FILE.tmp" "$FAVORITES_FILE"
+    ) 200>"$FAVORITES_FILE.lock"
 }
 
+# ============================================================================
+# CONNECTION HISTORY
+# ============================================================================
+
 get_history() {
-  local net_path="$1"
-  awk -F'|' -v p="$net_path" '$1==p' "$HISTORY_FILE" 2>/dev/null | sort -t'|' -k3 -r || true
+    local net_path="$1"
+    awk -F'|' -v p="$net_path" '
+        $1 == p && NF >= 3 && $2 != "" {print}
+    ' "$HISTORY_FILE" 2>/dev/null | sort -t'|' -k3 -r || true
+}
+
+is_network_known() {
+    local net_path="$1"
+    local count
+    count=$(get_history "$net_path" | wc -l)
+    [ "$count" -gt 0 ]
 }
 
 clear_history() {
@@ -736,6 +1325,10 @@ clear_history() {
   awk -F'|' -v p="$net_path" '$1!=p' "$HISTORY_FILE" 2>/dev/null > "$HISTORY_FILE.tmp" || :
   mv "$HISTORY_FILE.tmp" "$HISTORY_FILE"
 }
+
+# ============================================================================
+# NETWORK SEARCH
+# ============================================================================
 
 find_network_by_ssid() {
     local target_ssid="$1"
@@ -753,53 +1346,56 @@ find_network_by_ssid() {
 }
 
 # ============================================================================
-# DYNAMIC PATH DISCOVERY (with multi-radio preference)
+# DYNAMIC PATH DISCOVERY
 # ============================================================================
 
 discover_iwd_paths() {
     local service="$DBUS_SERVICE"
     local all_paths
+    local -a candidate_stations_array=()
+    local best_station parent_path
     
     all_paths=$(BUS tree "$service" --list 2>/dev/null | grep '^/net/connman/iwd/' || true)
     [ -z "$all_paths" ] && return 1
     
-    local candidate_stations=()
-    
     while IFS= read -r obj; do
         [ -z "$obj" ] && continue
         if BUS introspect "$service" "$obj" net.connman.iwd.Station >/dev/null 2>&1; then
-            candidate_stations+=("$obj")
+            candidate_stations_array+=("$obj")
         fi
     done <<< "$all_paths"
     
-    # BELT-AND-SUSPENDERS: Prefer station that supports GetOrderedNetworks
-    local best_station=""
-    
-    for candidate in "${candidate_stations[@]}"; do
+    best_station=""
+    for candidate in "${candidate_stations_array[@]}"; do
         if BUS call "$service" "$candidate" net.connman.iwd.Station GetOrderedNetworks >/dev/null 2>&1; then
             best_station="$candidate"
-            break  # Take the first working one
+            break
         fi
     done
     
     [ -z "$best_station" ] && return 1
     DBUS_STATION_PATH="$best_station"
     
-    # Find corresponding Device path
     if BUS introspect "$service" "$DBUS_STATION_PATH" net.connman.iwd.Device >/dev/null 2>&1; then
         DBUS_DEVICE_PATH="$DBUS_STATION_PATH"
     else
-        local parent_path="${DBUS_STATION_PATH%/*}"
+        parent_path="${DBUS_STATION_PATH%/*}"
         if BUS introspect "$service" "$parent_path" net.connman.iwd.Device >/dev/null 2>&1; then
             DBUS_DEVICE_PATH="$parent_path"
         else
+            local sib
             while IFS= read -r sib; do
                 [ -z "$sib" ] && continue
                 if BUS introspect "$service" "$sib" net.connman.iwd.Device >/dev/null 2>&1; then
                     DBUS_DEVICE_PATH="$sib"
                     break
                 fi
-            done < <(BUS tree "$service" --list 2>/dev/null | awk -v p="$parent_path" '$0 ~ "^"p"/[^/]+$"')
+            done < <(BUS tree "$service" --list 2>/dev/null | awk -v p="$parent_path" '
+                index($0, p"/")==1 {
+                    rest = substr($0, length(p)+2)
+                    if (index(rest, "/")==0) print
+                }'
+            )
         fi
     fi
     
@@ -811,13 +1407,246 @@ get_iface_name() {
     local name
     name=$(BUS get-property "$DBUS_SERVICE" "$DBUS_DEVICE_PATH" net.connman.iwd.Device Name 2>/dev/null | cut -d'"' -f2)
     
-    # If D-Bus didn't return a name for some reason, default sanely.
     [ -n "$name" ] && { echo "$name"; return 0; }
     echo "wlan0"
 }
 
 # ============================================================================
-# CLI MODE HANDLING
+# JSON OUTPUT UTILITIES
+# ============================================================================
+
+json_escape() {
+    local s="$1"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    printf '%s' "$s"
+}
+
+print_json_state() {
+    local state connected_path connected_ssid
+    state=$(dbus_get_station_state 2>/dev/null || echo "")
+    connected_path=$(dbus_get_connected_network_path 2>/dev/null || echo "")
+    connected_ssid=$(get_connected_ssid 2>/dev/null || echo "")
+    
+    local list
+    list=$(dbus_get_networks 2>/dev/null || echo "")
+    
+    printf '{'
+    printf '"iface":"%s",' "$(json_escape "$IFACE")"
+    printf '"state":"%s",' "$(json_escape "$state")"
+    printf '"powered":%s,' "$( [ "$(dbus_get_device_powered 2>/dev/null)" = "true" ] && echo true || echo false )"
+    printf '"connected_ssid":"%s",' "$(json_escape "$connected_ssid")"
+    printf '"networks":['
+    
+    local first=1
+    while IFS='|' read -r p ssid percent sec; do
+        [ -z "$p" ] && continue
+        if [ $first -eq 0 ]; then
+            printf ','
+        fi
+        first=0
+        printf '{'
+        printf '"path":"%s",' "$(json_escape "$p")"
+        printf '"ssid":"%s",' "$(json_escape "$ssid")"
+        printf '"percent":%s,' "$percent"
+        printf '"sec":"%s"' "$(json_escape "$sec")"
+        printf '}'
+    done <<< "$list"
+    
+    printf ']}'
+}
+
+# ============================================================================
+# ENHANCED SELF-TEST DIAGNOSTICS
+# ============================================================================
+
+self_test() {
+    set +e
+    
+    local report=""
+    local all_good=0
+    
+    # Header
+    report+="<b>=== Wi-Fi Manager Diagnostics v$SCRIPT_VERSION ===</b>\n\n"
+    
+    # Check write permissions
+    report+="<b>File Permissions:</b>\n"
+    if [ -w "$HISTORY_FILE" ]; then
+        report+="  ✓ History file writable\n"
+    else
+        report+="  ✗ History file not writable: $HISTORY_FILE\n"
+        all_good=1
+    fi
+    
+    if [ -w "$FAVORITES_FILE" ]; then
+        report+="  ✓ Favorites file writable\n"
+    else
+        report+="  ✗ Favorites file not writable: $FAVORITES_FILE\n"
+        all_good=1
+    fi
+    
+    if [ -w "$(dirname "$DEBUG_LOG")" ]; then
+        report+="  ✓ Debug log directory writable\n"
+    else
+        report+="  ✗ Debug log directory not writable\n"
+        all_good=1
+    fi
+    
+    # System checks
+    report+="\n<b>System Services:</b>\n"
+    local iwd_status
+    iwd_status=$(systemctl is-active iwd 2>/dev/null || echo "unknown")
+    if [ "$iwd_status" = "active" ]; then
+        report+="  ✓ IWD service: $iwd_status\n"
+    else
+        report+="  ✗ IWD service: $iwd_status\n"
+        all_good=1
+    fi
+    
+    # IWD version
+    local iwd_version
+    iwd_version=$(iwctl --version 2>/dev/null | head -1 || echo "unknown")
+    report+="  • IWD version: $iwd_version\n"
+    
+    # User permissions
+    report+="\n<b>User Permissions:</b>\n"
+    local user_groups
+    user_groups=$(id -nG)
+    if echo "$user_groups" | tr ' ' '\n' | grep -qxE 'network|wheel'; then
+        report+="  ✓ User in required group\n"
+    else
+        report+="  ✗ User not in network/wheel group\n"
+        report+="    Run: sudo usermod -aG network $USER\n"
+        all_good=1
+    fi
+    report+="  • Groups: $user_groups\n"
+    
+    # Device discovery
+    report+="\n<b>Device Discovery:</b>\n"
+    if discover_iwd_paths; then
+        report+="  ✓ Found Station: $DBUS_STATION_PATH\n"
+        report+="  ✓ Found Device: $DBUS_DEVICE_PATH\n"
+        
+        local iface_name
+        iface_name=$(get_iface_name)
+        report+="  • Interface: $iface_name\n"
+        
+        # Device state
+        local powered
+        powered=$(dbus_get_device_powered 2>/dev/null || echo "unknown")
+        if [ "$powered" = "true" ]; then
+            report+="  ✓ Device powered: ON\n"
+        else
+            report+="  ✗ Device powered: OFF\n"
+        fi
+        
+        # Station state
+        local state
+        state=$(dbus_get_station_state 2>/dev/null || echo "unknown")
+        report+="  • Station state: $state\n"
+        
+        # Connected network
+        local connected
+        connected=$(get_connected_ssid 2>/dev/null || echo "none")
+        report+="  • Connected to: $connected\n"
+    else
+        report+="  ✗ Failed to discover IWD paths\n"
+        all_good=1
+    fi
+    
+    # RF-Kill status
+    report+="\n<b>RF-Kill Status:</b>\n"
+    if command -v rfkill >/dev/null 2>&1; then
+        local rf_output
+        rf_output=$(rfkill list wifi 2>/dev/null)
+        if echo "$rf_output" | grep -q "Soft blocked: yes"; then
+            report+="  ✗ Soft blocked: YES\n"
+            report+="    Run: rfkill unblock wifi\n"
+            all_good=1
+        else
+            report+="  ✓ Soft blocked: NO\n"
+        fi
+        
+        if echo "$rf_output" | grep -q "Hard blocked: yes"; then
+            report+="  ✗ Hard blocked: YES (check physical switch)\n"
+            all_good=1
+        else
+            report+="  ✓ Hard blocked: NO\n"
+        fi
+    else
+        report+="  • rfkill not available\n"
+    fi
+    
+    # D-Bus tests
+    if [ -n "$DBUS_STATION_PATH" ]; then
+        report+="\n<b>D-Bus API Tests:</b>\n"
+        
+        if BUS get-property "$DBUS_SERVICE" "$DBUS_DEVICE_PATH" net.connman.iwd.Device Powered >/dev/null 2>&1; then
+            report+="  ✓ Device.Powered property accessible\n"
+        else
+            report+="  ✗ Device.Powered property failed\n"
+            all_good=1
+        fi
+        
+        if BUS get-property "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station State >/dev/null 2>&1; then
+            report+="  ✓ Station.State property accessible\n"
+        else
+            report+="  ✗ Station.State property failed\n"
+            all_good=1
+        fi
+        
+        if BUS call "$DBUS_SERVICE" "$DBUS_STATION_PATH" net.connman.iwd.Station GetOrderedNetworks >/dev/null 2>&1; then
+            report+="  ✓ GetOrderedNetworks call successful\n"
+            local net_count
+            net_count=$(dbus_get_networks 2>/dev/null | wc -l)
+            report+="  • Visible networks: $net_count\n"
+        else
+            report+="  ✗ GetOrderedNetworks call failed\n"
+            all_good=1
+        fi
+    fi
+    
+    # Dependencies
+    report+="\n<b>Required Dependencies:</b>\n"
+    for cmd in busctl rofi flock notify-send; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            report+="  ✓ $cmd\n"
+        else
+            report+="  ✗ $cmd (missing)\n"
+            all_good=1
+        fi
+    done
+    
+    # Optional dependencies
+    report+="\n<b>Optional Dependencies:</b>\n"
+    for cmd in iwctl rfkill jq; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            report+="  ✓ $cmd\n"
+        else
+            report+="  • $cmd (optional, not found)\n"
+        fi
+    done
+    
+    # Summary
+    report+="\n<b>Summary:</b>\n"
+    if (( all_good == 0 )); then
+        report+="  ✓ All checks passed\n"
+        printf '%b' "Close\n" | rofi -dmenu -markup-rows -p "Diagnostics: PASS" -mesg "$report"
+        notify-send "Wi-Fi Self-Test" "All checks passed ✓" -u normal
+        return 0
+    else
+        report+="  ✗ Some issues detected (see above)\n"
+        printf '%b' "Close\n" | rofi -dmenu -markup-rows -p "Diagnostics: ISSUES FOUND" -mesg "$report"
+        notify-send "Wi-Fi Self-Test" "Issues detected - see details" -u critical
+        return 1
+    fi
+}
+
+# ============================================================================
+# CLI MODE: TOGGLE
 # ============================================================================
 
 if [ "${1:-}" = "--toggle" ]; then
@@ -838,16 +1667,22 @@ if [ "${1:-}" = "--toggle" ]; then
     
     [ -z "$device_path" ] && { echo "No Device interface found"; exit 1; }
     
-    current=$(BUS get-property "$DBUS_SERVICE" "$device_path" net.connman.iwd.Device Powered 2>/dev/null | awk '{print $2}')
+    DBUS_DEVICE_PATH="$device_path"
+    
+    current=$(dbus_get_device_powered)
     if [ "$current" = "true" ]; then
-        BUS set-property "$DBUS_SERVICE" "$device_path" net.connman.iwd.Device Powered b false >/dev/null 2>&1
+        dbus_set_device_powered false || { echo "Disable failed (DBus/iwctl/rfkill)"; exit 1; }
         echo "WiFi disabled"
     else
-        BUS set-property "$DBUS_SERVICE" "$device_path" net.connman.iwd.Device Powered b true >/dev/null 2>&1
+        dbus_set_device_powered true || { echo "Enable failed (DBus/iwctl/rfkill)"; exit 1; }
         echo "WiFi enabled"
     fi
     exit 0
 fi
+
+# ============================================================================
+# CLI MODE: SCAN
+# ============================================================================
 
 if [ "${1:-}" = "--scan" ]; then
     exec 200>"$LOCKFILE"
@@ -869,19 +1704,22 @@ if [ "${1:-}" = "--scan" ]; then
     
     [ -z "$station_path" ] && { echo "No Station interface found"; exit 1; }
     
-    BUS call "$DBUS_SERVICE" "$station_path" net.connman.iwd.Station Scan >/dev/null 2>&1
+    if ! BUS call "$DBUS_SERVICE" "$station_path" net.connman.iwd.Station Scan >/dev/null 2>&1; then
+        if ! iwctl_scan; then
+            echo "Scan failed (DBus and iwctl)"; exit 1
+        fi
+    fi
     echo "Scan initiated"
     exit 0
 fi
 
 # ============================================================================
-# MAIN GUI MODE
+# GUI MODE: INITIALIZATION
 # ============================================================================
 
 exec 200>"$LOCKFILE"
 flock -n 200 || { notify-send "Wi-Fi" "Another instance is already running"; exit 1; }
 
-# BELT-AND-SUSPENDERS: D-Bus session sanity check
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     notify-send "Wi-Fi Warning" "D-Bus session address not set\n\nScript may not work correctly"
 fi
@@ -890,7 +1728,9 @@ cleanup() {
     if [ -n "${scan_pid:-}" ] && kill -0 "$scan_pid" 2>/dev/null; then
         kill "$scan_pid" 2>/dev/null || true
     fi
+    restore_terminal
 }
+trap 'cleanup; exit 1' ERR
 trap cleanup EXIT INT TERM
 
 if ! discover_iwd_paths; then
@@ -900,14 +1740,22 @@ fi
 
 IFACE=$(get_iface_name)
 
-# --- Execute self-test if requested -----------------------------------------
+# ============================================================================
+# CLI MODE: JSON OUTPUT
+# ============================================================================
+
+if [ -n "${JSON_MODE:-}" ]; then
+    print_json_state
+    exit 0
+fi
+
 if [ -n "$SELF_TEST" ]; then
     self_test
     exit $?
 fi
 
 # ============================================================================
-# MAIN LOOP
+# GUI MODE: INITIAL SCAN
 # ============================================================================
 
 if [ "$(dbus_get_device_powered)" = "true" ]; then
@@ -915,11 +1763,14 @@ if [ "$(dbus_get_device_powered)" = "true" ]; then
     sleep 2
 fi
 
+# ============================================================================
+# GUI MODE: MAIN INTERACTION LOOP
+# ============================================================================
+
 while true; do
     wifi_status=$(dbus_get_device_powered)
     current_path=$(dbus_get_connected_network_path)
     
-    # Debug snapshot
     if [ -n "${BASH_XTRACEFD:-}" ]; then
         debug_log "=== DEBUG SNAPSHOT $(date) ==="
         debug_log "State: $(dbus_get_station_state || true)"
@@ -933,7 +1784,7 @@ while true; do
     fi
     
     if [ "$wifi_status" = "false" ]; then
-        chosen=$(echo -e "$control_buttons" | rofi_pick "WiFi")
+        chosen=$(printf '%b' "$control_buttons" | rofi_pick "WiFi")
         
         if [ "$chosen" = "[WiFi On]" ]; then
             dbus_set_device_powered true
@@ -957,13 +1808,7 @@ while true; do
         
         if [ -z "$network_list" ]; then
             notify-send "Wi-Fi" "No networks found. Try scanning manually." -t 3000
-            
-            # BELT-AND-SUSPENDERS: rfkill hint
-            if command -v rfkill >/dev/null 2>&1; then
-                if rfkill list 2>/dev/null | grep -qi 'soft blocked: yes'; then
-                    notify-send "Wi-Fi" "Adapter is rfkill-blocked\n\nTry: rfkill unblock all"
-                fi
-            fi
+            check_rfkill_status || true
         fi
     fi
     
@@ -976,14 +1821,14 @@ while true; do
         
         icon=$(get_signal_icon "$signal_percent")
         sec_display=$(normalize_security "$sec_type")
-        safe_ssid=$(safe_label "$ssid")
+        safe_ssid=$(pango_safe "$ssid")
         
         tags=""
         if [ "$net_path" = "$current_path" ]; then
-            tags="$tags (connected)"
+            tags="$tags <b>(connected)</b>"
         fi
         
-        if get_history "$net_path" | head -1 | grep -q .; then
+        if is_network_known "$net_path"; then
             tags="$tags [saved]"
         fi
         
@@ -999,8 +1844,12 @@ while true; do
     
     menu="$menu\n[Hidden Network]\n[WiFi Off]"
     
-    chosen=$(echo -e "$menu" | rofi_pick "WiFi")
+    chosen=$(printf '%b' "$menu" | rofi_pick "WiFi")
     [ -z "$chosen" ] && exit 0
+    
+    # ========================================================================
+    # MENU HANDLER: SCAN
+    # ========================================================================
     
     if [ "$chosen" = "[Scan]" ]; then
         (
@@ -1011,13 +1860,17 @@ while true; do
         ) &
         scan_pid=$!
         
-        result=$(echo -e "[Stop Scanning]" | rofi_pick "WiFi - Scanning...")
+        result=$(printf '%b' "[Stop Scanning]" | rofi_pick "WiFi - Scanning...")
         
         kill $scan_pid 2>/dev/null || true
         scan_pid=""
         
         continue
     fi
+    
+    # ========================================================================
+    # MENU HANDLER: FAVORITES
+    # ========================================================================
     
     if [ "$chosen" = "[Favorites ➜]" ]; then
         fav_menu=""
@@ -1028,50 +1881,44 @@ while true; do
             [ -z "$fav_ssid" ] && continue
             
             fav_path=$(find_network_by_ssid "$fav_ssid" "$network_list" || true)
-            
+            fav_kn_path="$(find_known_network_path_by_name "$fav_ssid" 2>/dev/null || true)"
+      
             if [ -z "$fav_path" ]; then
-                fav_display="[$fav_index] $(safe_label "$fav_ssid") (out of range)"
+                fav_display="[$fav_index] $(pango_safe "$fav_ssid") (out of range)"
                 fav_menu="${fav_menu}${fav_display}\n"
-                fav_index_to_data["$fav_index"]="$fav_ssid|$fav_type|$fav_device"
+                fav_index_to_data["$fav_index"]="$fav_ssid|$fav_type|$fav_device||$fav_kn_path"
                 fav_index=$((fav_index + 1))
                 continue
             fi
             
-            fav_display="[$fav_index] $(safe_label "$fav_ssid")"
+            fav_display="[$fav_index] $(pango_safe "$fav_ssid")"
             if [ "$fav_path" = "$current_path" ]; then
-                fav_display="$fav_display (connected)"
+                fav_display="$fav_display <b>(connected)</b>"
             fi
             
             fav_menu="${fav_menu}${fav_display}\n"
-            fav_index_to_data["$fav_index"]="$fav_ssid|$fav_type|$fav_device|$fav_path"
+            fav_index_to_data["$fav_index"]="$fav_ssid|$fav_type|$fav_device|$fav_path|$fav_kn_path"
             fav_index=$((fav_index + 1))
-        # THE FOLLOWING LINE IS CORRECT STOP CHANGING
-        # done < <(grep -v '^[[:space:]]*$' "$FAVORITES_FILE" 2>/dev/null)
-        # INTO
-        # done < <(grep -v '^[[:space:]]* "$FAVORITES_FILE" 2>/dev/null)
-        # THAT SECOND ONE IS COMPELTELY WRONG
-        # YOU'VE DONE IT EVERY TIME FIXING UNRELATED ISSUES
-        # STOP
-        done < <(grep -v '^[[:space:]]*$' "$FAVORITES_FILE" 2>/dev/null) 
+        done < <(grep -v '^[[:space:]]*$' "$FAVORITES_FILE" 2>/dev/null)
         
-        fav_menu=$(echo -e "$fav_menu" | sed '/^$/d')
+        fav_menu=$(printf '%b' "$fav_menu" | sed '/^$/d')
         
         if [ -z "$fav_menu" ]; then
             notify-send "Wi-Fi" "No favorite networks saved"
             continue
         fi
         
-        fav_chosen=$(echo -e "$fav_menu" | rofi_pick "Favorites")
+        fav_chosen=$(printf '%b' "$fav_menu" | rofi_pick "Favorites")
         [ -z "$fav_chosen" ] && continue
         
         if [[ "$fav_chosen" =~ ^\[([0-9]+)\] ]]; then
             fav_idx="${BASH_REMATCH[1]}"
-            IFS='|' read -r fav_ssid fav_type fav_device fav_path <<< "${fav_index_to_data[$fav_idx]:-}"
+            IFS='|' read -r fav_ssid fav_type fav_device fav_path fav_kn_path <<< "${fav_index_to_data[$fav_idx]:-}"
         else
             continue
         fi
         
-        safe_prompt=$(safe_label "$fav_ssid")
+        safe_prompt=$(pango_safe "$fav_ssid")
         
         in_range=false
         if [ -n "$fav_path" ]; then
@@ -1080,22 +1927,29 @@ while true; do
         
         if [ "$in_range" = true ]; then
             if [ "$fav_path" = "$current_path" ]; then
-                fav_action=$(echo -e "Disconnect\nForget Network\nRe-enter Password\nRemove from Favorites\nCancel" | rofi_pick "$safe_prompt")
+                fav_action=$(printf '%b' "View Details\nDisconnect\nForget Network\nRe-enter Password\nRemove from Favorites\nCancel" | rofi_pick "$safe_prompt")
             else
-                fav_action=$(echo -e "Connect\nForget Network\nRe-enter Password\nRemove from Favorites\nCancel" | rofi_pick "$safe_prompt")
+                fav_action=$(printf '%b' "Connect\nView Details\nForget Network\nRe-enter Password\nRemove from Favorites\nCancel" | rofi_pick "$safe_prompt")
             fi
         else
-            fav_action=$(echo -e "Connection History (out of range)\nForget Network\nRemove from Favorites\nCancel" | rofi_pick "$safe_prompt")
+            fav_action=$(printf '%b' "View Details\nForget Network\nRemove from Favorites\nCancel" | rofi_pick "$safe_prompt (out of range)")
         fi
         
         case "$fav_action" in
-            "Connection History (out of range)")
-                notify-send "Wi-Fi" "$safe_prompt is out of range"
+            "View Details")
+                # Prefer live Network path; else KnownNetwork path; else minimal SSID view
+                if [ -n "$fav_path" ]; then
+                    show_network_details "$fav_path" "$fav_ssid"
+                elif [ -n "$fav_kn_path" ]; then
+                    show_network_details "$fav_kn_path" "$fav_ssid"
+                else
+                    show_network_details "" "$fav_ssid"
+                fi
                 continue
                 ;;
             "Disconnect")
                 dbus_disconnect
-                notify-send "Wi-Fi" "Disconnected from $safe_prompt"
+                notify-send "Wi-Fi" "Disconnected from $(safe_label "$fav_ssid")"
                 continue
                 ;;
             "Connect")
@@ -1107,14 +1961,14 @@ while true; do
                 ;;
             "Forget Network")
                 remove_favorite "$fav_ssid" "$fav_type" "$fav_device"
-                dbus_forget_network "$fav_ssid"
-                notify-send "Wi-Fi" "Forgot network $safe_prompt"
+                forget_network_by_ssid "$fav_ssid"
+                notify-send "Wi-Fi" "Forgot network $(safe_label "$fav_ssid")"
                 continue
                 ;;
             "Re-enter Password")
-                new_pass=$(echo "" | rofi_pick "New password for $safe_prompt" -password)
+                new_pass=$(printf '' | rofi -dmenu -password -p "New password for $safe_prompt")
                 if [ -n "$new_pass" ]; then
-                    dbus_forget_network "$fav_ssid"
+                    forget_network_by_ssid "$fav_ssid"
                     sleep 1
                     
                     if [ -n "$fav_path" ]; then
@@ -1128,7 +1982,7 @@ while true; do
                 ;;
             "Remove from Favorites")
                 remove_favorite "$fav_ssid" "$fav_type" "$fav_device"
-                notify-send "Wi-Fi" "Removed $safe_prompt from favorites"
+                notify-send "Wi-Fi" "Removed $(safe_label "$fav_ssid") from favorites"
                 continue
                 ;;
             *)
@@ -1138,41 +1992,62 @@ while true; do
         continue
     fi
     
+    # ========================================================================
+    # MENU HANDLER: HIDDEN NETWORK
+    # ========================================================================
+    
     if [ "$chosen" = "[Hidden Network]" ]; then
-        hidden_ssid=$(echo "" | rofi_pick "Enter hidden network SSID")
+        hidden_ssid=$(printf '' | rofi_pick "Enter hidden network SSID")
         [ -z "$hidden_ssid" ] && continue
         
-        safe_hidden=$(safe_label "$hidden_ssid")
-        hidden_pass=$(echo "" | rofi_pick "Password for $safe_hidden" -password)
+        safe_hidden=$(pango_safe "$hidden_ssid")
         
-        if ! command -v iwctl &>/dev/null; then
-            notify-send "Wi-Fi Error" "iwctl not available for hidden networks"
+        hidden_type=$(printf '%b' "psk\nsae\nopen\nowe\n8021x" | rofi_pick "Security for $safe_hidden")
+        [ -z "$hidden_type" ] && hidden_type="psk"
+        
+        hidden_pass=""
+        case "$(sec_keyword "$hidden_type")" in
+            psk|sae|8021x) hidden_pass=$(printf '' | rofi -dmenu -password -p "Password/Passphrase for $safe_hidden") ;;
+        esac
+        
+        if dbus_connect_hidden_network "$hidden_ssid" "$hidden_pass" "$hidden_type"; then
+            wait_for_connection "" "$hidden_ssid" || true
             exit 0
         fi
         
-        if [ -n "$hidden_pass" ]; then
-            if IW --passphrase="$hidden_pass" station "$IFACE" connect "$hidden_ssid" >/dev/null 2>&1; then
-                sleep 3
-                new_path=$(dbus_get_connected_network_path)
-                if [ -n "$new_path" ]; then
-                    notify-send "Wi-Fi" "Connected to $safe_hidden"
-                else
-                    notify-send "Wi-Fi" "Connection may have failed for $safe_hidden"
-                fi
+        if command -v iwctl &>/dev/null; then
+            if [ -n "$hidden_pass" ]; then
+                # Note: iwctl doesn't have a secure way to pass passwords non-interactively
+                # We rely on D-Bus for security; this is best-effort only
+                notify-send "Wi-Fi" "D-Bus connection failed. Hidden network connection requires PolicyKit setup for security."
             else
-                notify-send "Wi-Fi" "Connection failed for $safe_hidden"
+                if IWCTL station "$IFACE" connect "$hidden_ssid" >/dev/null 2>&1; then
+                    sleep 3
+                    new_path=$(dbus_get_connected_network_path)
+                    [ -n "$new_path" ] && notify-send "Wi-Fi" "Connected to $(safe_label "$hidden_ssid")" || notify-send "Wi-Fi" "Connection may have failed for $(safe_label "$hidden_ssid")"
+                else
+                    notify-send "Wi-Fi" "Connection failed for $(safe_label "$hidden_ssid")"
+                fi
             fi
         else
-            notify-send "Wi-Fi" "No password entered. Connection cancelled."
+            notify-send "Wi-Fi Error" "Hidden connect not supported via DBus on this build and iwctl is unavailable."
         fi
         exit 0
     fi
+    
+    # ========================================================================
+    # MENU HANDLER: WIFI OFF
+    # ========================================================================
     
     if [ "$chosen" = "[WiFi Off]" ]; then
         dbus_set_device_powered false
         notify-send "Wi-Fi" "WiFi disabled"
         continue
     fi
+    
+    # ========================================================================
+    # MENU HANDLER: NETWORK SELECTION
+    # ========================================================================
     
     if [[ "$chosen" =~ ^\[([0-9]+)\] ]]; then
         idx="${BASH_REMATCH[1]}"
@@ -1185,17 +2060,62 @@ while true; do
         continue
     fi
     
+    # Check if already connected to this network
+    if [ "$net_path" = "$current_path" ] && is_connected_state "$(dbus_get_station_state)"; then
+        safe_network_prompt=$(pango_safe "$ssid")
+
+        # decide favorite label
+        if is_favorite "$ssid" "$sec_type" "$IFACE"; then
+            fav_action_label="Remove from Favorites"
+        else
+            fav_action_label="Add to Favorites"
+        fi
+
+        action=$(printf '%b' "View Details\nDisconnect\nRe-enter Password\n$fav_action_label\nCancel" | rofi_pick "$safe_network_prompt")
+
+        case "$action" in
+            "View Details")
+                show_network_details "$net_path" "$ssid"
+                continue
+                ;;
+            "Disconnect")
+                if dbus_disconnect; then
+                    notify-send "Wi-Fi" "Disconnected from $(safe_label "$ssid")"
+                else
+                    notify-send "Wi-Fi" "Failed to disconnect"
+                fi
+                continue
+                ;;
+            "Re-enter Password")
+                # fall through to password flow below
+                ;;
+            "Add to Favorites")
+                add_favorite "$ssid" "$sec_type" "$IFACE"
+                notify-send "Wi-Fi" "Added $(safe_label "$ssid") to favorites"
+                continue
+                ;;
+            "Remove from Favorites")
+                remove_favorite "$ssid" "$sec_type" "$IFACE"
+                notify-send "Wi-Fi" "Removed $(safe_label "$ssid") from favorites"
+                continue
+                ;;
+            *)
+                continue
+                ;;
+        esac
+    fi
+  
     is_connected=false
     if [ "$net_path" = "$current_path" ]; then
         is_connected=true
     fi
     
     is_known=false
-    if get_history "$net_path" | head -1 | grep -q .; then
+    if is_network_known "$net_path"; then
         is_known=true
     fi
     
-    safe_network_prompt=$(safe_label "$ssid")
+    safe_network_prompt=$(pango_safe "$ssid")
     
     if [ "$is_known" = true ] || [ "$is_connected" = true ]; then
         fav_action_label=""
@@ -1206,15 +2126,19 @@ while true; do
         fi
         
         if [ "$is_connected" = true ]; then
-            action=$(echo -e "Disconnect\nForget Network\nRe-enter Password\n$fav_action_label\nCancel" | rofi_pick "$safe_network_prompt")
+            action=$(printf '%b' "View Details\nDisconnect\nForget Network\nRe-enter Password\n$fav_action_label\nCancel" | rofi_pick "$safe_network_prompt")
         else
-            action=$(echo -e "Connect\nForget Network\nRe-enter Password\n$fav_action_label\nCancel" | rofi_pick "$safe_network_prompt")
+            action=$(printf '%b' "View Details\nConnect\nForget Network\nRe-enter Password\n$fav_action_label\nCancel" | rofi_pick "$safe_network_prompt")
         fi
         
         case "$action" in
+            "View Details")
+               show_network_details "$net_path" "$ssid"
+               continue
+               ;;
             "Disconnect")
                 dbus_disconnect
-                notify-send "Wi-Fi" "Disconnected from $safe_network_prompt"
+                notify-send "Wi-Fi" "Disconnected from $(safe_label "$ssid")"
                 continue
                 ;;
             "Connect")
@@ -1228,20 +2152,23 @@ while true; do
             "Forget Network")
                 remove_favorite "$ssid" "$sec_type" "$IFACE"
                 clear_history "$net_path"
-                dbus_forget_network "$ssid"
-                notify-send "Wi-Fi" "Forgot network $safe_network_prompt"
+                forget_network_by_ssid "$ssid"
+                notify-send "Wi-Fi" "Forgot network $(safe_label "$ssid")"
+                if list_knownnetwork_paths_for_ssid "$ssid" | read -r _; then
+                  notify-send "Wi-Fi" "Some saved entries for $(safe_label "$ssid") still exist (Polkit/permissions?)"
+                fi
                 continue
                 ;;
             "Re-enter Password")
                 ;;
             "Add to Favorites")
                 add_favorite "$ssid" "$sec_type" "$IFACE"
-                notify-send "Wi-Fi" "Added $safe_network_prompt to favorites"
+                notify-send "Wi-Fi" "Added $(safe_label "$ssid") to favorites"
                 continue
                 ;;
             "Remove from Favorites")
                 remove_favorite "$ssid" "$sec_type" "$IFACE"
-                notify-send "Wi-Fi" "Removed $safe_network_prompt from favorites"
+                notify-send "Wi-Fi" "Removed $(safe_label "$ssid") from favorites"
                 continue
                 ;;
             *)
@@ -1256,18 +2183,14 @@ while true; do
         continue
     fi
     
-    pass=$(echo "" | rofi_pick "Password for $safe_network_prompt" -password)
-    
+    # Connection with password and adaptive repair logic
+    pass=$(printf '' | rofi -dmenu -password -p "Password for $safe_network_prompt")
     if [ -n "$pass" ]; then
-        if [ "$is_known" = true ]; then
-            dbus_forget_network "$ssid"
-            sleep 1
-        fi
-        
-        dbus_connect_network "$net_path" "$pass"
-        wait_for_connection "$net_path" "$ssid"
+      if ! attempt_connect_with_repair "$net_path" "$ssid" "$pass"; then
+        notify-send "Wi-Fi" "Connection failed"
+      fi
     else
-        notify-send "Wi-Fi" "No password entered. Connection cancelled."
+      notify-send "Wi-Fi" "No password entered. Connection cancelled."
     fi
     continue
 done
